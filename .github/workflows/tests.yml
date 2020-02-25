@@ -1,0 +1,178 @@
+name: Warehouse CI
+
+on:
+  pull_request:
+    branches:
+      - 'master'
+  push:
+    branches:
+      - 'master'
+
+
+jobs:
+  tests:
+    runs-on: ubuntu-18.04
+
+    services:
+      postgres:
+        image: postgres:10.1
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Python 3.7
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.7
+    - name: Install System Dependencies
+      run: |
+        sudo apt update
+        sudo apt-get install --no-install-recommends -y build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev
+    - uses: actions/cache@v1
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install -U pip setuptools wheel
+        pip install -r requirements/main.txt -r requirements/deploy.txt -r requirements/docs.txt -r requirements/lint.txt -r requirements/tests.txt
+    - name: Run Tests
+      run: bin/tests --postgresql-host 127.0.0.1
+
+  lint:
+    runs-on: ubuntu-18.04
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Python 3.7
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.7
+    - name: Install System Dependencies
+      run: |
+        sudo apt update
+        sudo apt-get install --no-install-recommends -y build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev nasm
+    - uses: actions/cache@v1
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-npm-
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install -U pip setuptools wheel
+        pip install -r requirements/main.txt -r requirements/deploy.txt -r requirements/docs.txt -r requirements/lint.txt -r requirements/tests.txt
+    - name: Install Node Dependencies
+      run: npm install
+    - name: Lint
+      run: make lint BINDIR="$(dirname $(which python))"
+
+  docs:
+    runs-on: ubuntu-18.04
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Python 3.7
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.7
+    - name: Install System Dependencies
+      run: |
+        sudo apt update
+        sudo apt-get install --no-install-recommends -y build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev
+    - uses: actions/cache@v1
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install -U pip setuptools wheel
+        pip install -r requirements/main.txt -r requirements/deploy.txt -r requirements/docs.txt -r requirements/lint.txt -r requirements/tests.txt
+    - name: Docs
+      run: make docs BINDIR="$(dirname $(which python))"
+
+  deps:
+    runs-on: ubuntu-18.04
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Python 3.7
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.7
+    - name: Install System Dependencies
+      run: |
+        sudo apt update
+        sudo apt-get install --no-install-recommends -y build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev
+    - uses: actions/cache@v1
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install -U pip setuptools wheel
+        pip install -r requirements/main.txt -r requirements/deploy.txt -r requirements/docs.txt -r requirements/lint.txt -r requirements/tests.txt
+    - name: Dependencies
+      run: make travis-deps BINDIR="$(dirname $(which python))"
+
+  licenses:
+    runs-on: ubuntu-18.04
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Python 3.7
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.7
+    - name: Install System Dependencies
+      run: |
+        sudo apt update
+        sudo apt-get install --no-install-recommends -y build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev
+    - uses: actions/cache@v1
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install -U pip setuptools wheel
+        pip install -r requirements/main.txt -r requirements/deploy.txt -r requirements/docs.txt -r requirements/lint.txt -r requirements/tests.txt
+    - name: Licenses
+      run: make licenses BINDIR="$(dirname $(which python))"
+
+  frontend_tests:
+    runs-on: ubuntu-18.04
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Node.js 8.9
+      uses: actions/setup-node@v1
+      with:
+        node-version: 8.9
+    - name: Install System Dependencies
+      run: |
+        sudo apt update
+        sudo apt-get install --no-install-recommends -y build-essential nasm
+    - uses: actions/cache@v1
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-npm-
+    - name: Install Node Dependencies
+      run: npm install
+    - name: Run Tests
+      run: bin/static_tests
