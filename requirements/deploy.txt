@@ -15,9 +15,9 @@ bytecode==0.14.0 \
     --hash=sha256:d41ad53c657ba0bef1cb4828d9d6e450766e31cb66c6f91fc1851f052889d1b7 \
     --hash=sha256:f7b7cbed3239acee036d6c0f9d04286b100921114601bf844ae569b95bf91a9f
     # via ddtrace
-cattrs==22.2.0 \
-    --hash=sha256:bc12b1f0d000b9f9bee83335887d532a1d3e99a833d1bf0882151c97d3e68c21 \
-    --hash=sha256:f0eed5642399423cf656e7b66ce92cdc5b963ecafd041d1b24d136fdde7acf6d
+cattrs==23.1.0 \
+    --hash=sha256:57a5129bfa0c752d4f215311228ea6282bbaae0edbb27f575503df0a260e1c49 \
+    --hash=sha256:9be29ab7041a3b9da67cad5daee578c511bcd52495ed85a6f8be3cf9d7c922d3
     # via ddtrace
 ddsketch==2.0.4 \
     --hash=sha256:3227a270fd686a29d3a7128f9352ccf852314410380fc11384356f1ae2a75938 \
