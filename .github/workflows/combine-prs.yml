@@ -153,6 +153,7 @@ jobs:
           git branch $COMBINE_BRANCH_NAME $basebranch
           git checkout $COMBINE_BRANCH_NAME
           git pull origin $sourcebranches --no-edit
+          git rebase origin/main
           git push origin $COMBINE_BRANCH_NAME
       # Creates a PR with the new combined branch
       - uses: actions/github-script@v6
