@@ -12,6 +12,8 @@
 
 import json
 
+from datetime import datetime
+
 import pretend
 import pytest
 
@@ -21,7 +23,7 @@ from tests.common.db.packaging import ProjectFactory
 from warehouse.events.tags import EventTag
 from warehouse.macaroons import caveats
 from warehouse.macaroons.interfaces import IMacaroonService
-from warehouse.oidc import views
+from warehouse.oidc import errors, views
 from warehouse.oidc.interfaces import IOIDCPublisherService
 from warehouse.rate_limiting.interfaces import IRateLimiter
 
@@ -43,14 +45,34 @@ def test_ratelimiters():
     ]
 
 
-@pytest.mark.parametrize(
-    ("registry", "admin"), [(False, False), (False, True), (True, True)]
-)
-def test_mint_token_from_oidc_not_enabled(registry, admin):
+def test_oidc_audience_not_enabled():
+    request = pretend.stub(
+        flags=pretend.stub(disallow_oidc=lambda *a: True),
+    )
+
+    response = views.oidc_audience(request)
+    assert response.status_code == 403
+    assert response.json == {"message": "Trusted publishing functionality not enabled"}
+
+
+def test_oidc_audience():
+    request = pretend.stub(
+        registry=pretend.stub(
+            settings={
+                "warehouse.oidc.audience": "fakeaudience",
+            }
+        ),
+        flags=pretend.stub(disallow_oidc=lambda *a: False),
+    )
+
+    response = views.oidc_audience(request)
+    assert response == {"audience": "fakeaudience"}
+
+
+def test_mint_token_from_oidc_not_enabled():
     request = pretend.stub(
         response=pretend.stub(status=None),
-        registry=pretend.stub(settings={"warehouse.oidc.enabled": registry}),
-        flags=pretend.stub(enabled=lambda *a: admin),
+        flags=pretend.stub(disallow_oidc=lambda *a: True),
     )
 
     response = views.mint_token_from_oidc(request)
@@ -58,7 +80,12 @@ def test_mint_token_from_oidc_not_enabled(registry, admin):
     assert response == {
         "message": "Token request failed",
         "errors": [
-            {"code": "not-enabled", "description": "OIDC functionality not enabled"}
+            {
+                "code": "not-enabled",
+                "description": (
+                    "GitHub-based trusted publishing functionality not enabled"
+                ),
+            }
         ],
     }
 
@@ -86,8 +113,7 @@ def test_mint_token_from_oidc_invalid_payload(body):
     class Request:
         def __init__(self):
             self.response = pretend.stub(status=None)
-            self.registry = pretend.stub(settings={"warehouse.oidc.enabled": True})
-            self.flags = pretend.stub(enabled=lambda *a: False)
+            self.flags = pretend.stub(disallow_oidc=lambda *a: False)
 
         @property
         def body(self):
@@ -105,7 +131,7 @@ def test_mint_token_from_oidc_invalid_payload(body):
         assert isinstance(err["description"], str)
 
 
-def test_mint_token_from_oidc_publisher_verify_jwt_signature_fails():
+def test_mint_token_from_trusted_publisher_verify_jwt_signature_fails():
     oidc_service = pretend.stub(
         verify_jwt_signature=pretend.call_recorder(lambda token: None),
     )
@@ -113,8 +139,7 @@ def test_mint_token_from_oidc_publisher_verify_jwt_signature_fails():
         response=pretend.stub(status=None),
         body=json.dumps({"token": "faketoken"}),
         find_service=pretend.call_recorder(lambda cls, **kw: oidc_service),
-        registry=pretend.stub(settings={"warehouse.oidc.enabled": True}),
-        flags=pretend.stub(enabled=lambda *a: False),
+        flags=pretend.stub(disallow_oidc=lambda *a: False),
     )
 
     response = views.mint_token_from_oidc(request)
@@ -135,18 +160,20 @@ def test_mint_token_from_oidc_publisher_verify_jwt_signature_fails():
     assert oidc_service.verify_jwt_signature.calls == [pretend.call("faketoken")]
 
 
-def test_mint_token_from_oidc_publisher_lookup_fails():
+def test_mint_token_from_trusted_publisher_lookup_fails():
     claims = pretend.stub()
+    message = "some message"
     oidc_service = pretend.stub(
         verify_jwt_signature=pretend.call_recorder(lambda token: claims),
-        find_publisher=pretend.call_recorder(lambda claims, **kw: None),
+        find_publisher=pretend.call_recorder(
+            pretend.raiser(errors.InvalidPublisherError(message))
+        ),
     )
     request = pretend.stub(
         response=pretend.stub(status=None),
         body=json.dumps({"token": "faketoken"}),
         find_service=pretend.call_recorder(lambda cls, **kw: oidc_service),
-        registry=pretend.stub(settings={"warehouse.oidc.enabled": True}),
-        flags=pretend.stub(enabled=lambda *a: False),
+        flags=pretend.stub(disallow_oidc=lambda *a: False),
     )
 
     response = views.mint_token_from_oidc(request)
@@ -156,13 +183,15 @@ def test_mint_token_from_oidc_publisher_lookup_fails():
         "errors": [
             {
                 "code": "invalid-publisher",
-                "description": "valid token, but no corresponding publisher",
+                "description": (
+                    f"valid token, but no corresponding publisher ({message})"
+                ),
             }
         ],
     }
 
     assert request.find_service.calls == [
-        pretend.call(IOIDCPublisherService, name="github")
+        pretend.call(IOIDCPublisherService, name="github"),
     ]
     assert oidc_service.verify_jwt_signature.calls == [pretend.call("faketoken")]
     assert oidc_service.find_publisher.calls == [
@@ -175,8 +204,7 @@ def test_mint_token_from_oidc_pending_publisher_project_already_exists(db_reques
     project = ProjectFactory.create()
     pending_publisher = PendingGitHubPublisherFactory.create(project_name=project.name)
 
-    db_request.registry.settings = {"warehouse.oidc.enabled": True}
-    db_request.flags.enabled = lambda f: False
+    db_request.flags.disallow_oidc = lambda f=None: False
     db_request.body = json.dumps({"token": "faketoken"})
 
     claims = pretend.stub()
@@ -219,10 +247,10 @@ def test_mint_token_from_oidc_pending_publisher_ok(
         repository_owner="foo",
         repository_owner_id="123",
         workflow_filename="example.yml",
+        environment="",
     )
 
-    db_request.registry.settings = {"warehouse.oidc.enabled": True}
-    db_request.flags.enabled = lambda f: False
+    db_request.flags.disallow_oidc = lambda f=None: False
     db_request.body = json.dumps(
         {
             "token": (
@@ -261,7 +289,7 @@ def test_mint_token_from_oidc_pending_publisher_ok(
     ]
 
 
-def test_mint_token_from_pending_oidc_publisher_invalidates_others(
+def test_mint_token_from_pending_trusted_publisher_invalidates_others(
     monkeypatch, db_request
 ):
     time = pretend.stub(time=pretend.call_recorder(lambda: 0))
@@ -275,6 +303,7 @@ def test_mint_token_from_pending_oidc_publisher_invalidates_others(
         repository_owner="foo",
         repository_owner_id="123",
         workflow_filename="example.yml",
+        environment="",
     )
 
     # Create some other pending publishers for the same nonexistent project,
@@ -289,17 +318,16 @@ def test_mint_token_from_pending_oidc_publisher_invalidates_others(
         )
         emailed_users.append(user)
 
-    send_pending_oidc_publisher_invalidated_email = pretend.call_recorder(
+    send_pending_trusted_publisher_invalidated_email = pretend.call_recorder(
         lambda *a, **kw: None
     )
     monkeypatch.setattr(
         views,
-        "send_pending_oidc_publisher_invalidated_email",
-        send_pending_oidc_publisher_invalidated_email,
+        "send_pending_trusted_publisher_invalidated_email",
+        send_pending_trusted_publisher_invalidated_email,
     )
 
-    db_request.registry.settings = {"warehouse.oidc.enabled": True}
-    db_request.flags.enabled = lambda f: False
+    db_request.flags.oidc_enabled = lambda f: False
     db_request.body = json.dumps(
         {
             "token": (
@@ -334,7 +362,7 @@ def test_mint_token_from_pending_oidc_publisher_invalidates_others(
 
     # We should have sent one invalidation email for each pending publisher that
     # was invalidated by the minting operation.
-    assert send_pending_oidc_publisher_invalidated_email.calls == [
+    assert send_pending_trusted_publisher_invalidated_email.calls == [
         pretend.call(db_request, emailed_users[0], project_name="does_not_exist"),
         pretend.call(db_request, emailed_users[1], project_name="does-not-exist"),
         pretend.call(db_request, emailed_users[2], project_name="dOeS-NoT-ExISt"),
@@ -346,7 +374,17 @@ def test_mint_token_from_pending_oidc_publisher_invalidates_others(
     ]
 
 
-def test_mint_token_from_oidc_no_pending_publisher_ok(monkeypatch):
+@pytest.mark.parametrize(
+    ("claims_in_token", "claims_input"),
+    [
+        ({"ref": "someref", "sha": "somesha"}, {"ref": "someref", "sha": "somesha"}),
+        ({"ref": "someref"}, {"ref": "someref", "sha": None}),
+        ({"sha": "somesha"}, {"ref": None, "sha": "somesha"}),
+    ],
+)
+def test_mint_token_from_oidc_no_pending_publisher_ok(
+    monkeypatch, claims_in_token, claims_input
+):
     time = pretend.stub(time=pretend.call_recorder(lambda: 0))
     monkeypatch.setattr(views, "time", time)
 
@@ -358,17 +396,20 @@ def test_mint_token_from_oidc_no_pending_publisher_ok(monkeypatch):
         id="fakepublisherid",
         projects=[project],
         publisher_name="fakepublishername",
-        publisher_url="https://fake/url",
+        publisher_url=lambda x=None: "https://fake/url",
     )
     # NOTE: Can't set __str__ using pretend.stub()
     monkeypatch.setattr(publisher.__class__, "__str__", lambda s: "fakespecifier")
 
-    claims = pretend.stub()
+    def _find_publisher(claims, pending=False):
+        if pending:
+            raise errors.InvalidPublisherError
+        else:
+            return publisher
+
     oidc_service = pretend.stub(
-        verify_jwt_signature=pretend.call_recorder(lambda token: claims),
-        find_publisher=pretend.call_recorder(
-            lambda claims, pending=False: publisher if not pending else None
-        ),
+        verify_jwt_signature=pretend.call_recorder(lambda token: claims_in_token),
+        find_publisher=pretend.call_recorder(_find_publisher),
     )
 
     db_macaroon = pretend.stub(description="fakemacaroon")
@@ -391,8 +432,7 @@ def test_mint_token_from_oidc_no_pending_publisher_ok(monkeypatch):
         find_service=find_service,
         domain="fakedomain",
         remote_addr="0.0.0.0",
-        registry=pretend.stub(settings={"warehouse.oidc.enabled": True}),
-        flags=pretend.stub(enabled=lambda *a: False),
+        flags=pretend.stub(disallow_oidc=lambda *a: False),
     )
 
     response = views.mint_token_from_oidc(request)
@@ -403,25 +443,28 @@ def test_mint_token_from_oidc_no_pending_publisher_ok(monkeypatch):
 
     assert oidc_service.verify_jwt_signature.calls == [pretend.call("faketoken")]
     assert oidc_service.find_publisher.calls == [
-        pretend.call(claims, pending=True),
-        pretend.call(claims, pending=False),
+        pretend.call(claims_in_token, pending=True),
+        pretend.call(claims_in_token, pending=False),
     ]
     assert macaroon_service.create_macaroon.calls == [
         pretend.call(
             "fakedomain",
-            "OpenID token: https://fake/url (0)",
+            f"OpenID token: fakespecifier ({datetime.fromtimestamp(0).isoformat()})",
             [
-                caveats.OIDCPublisher(oidc_publisher_id="fakepublisherid"),
+                caveats.OIDCPublisher(
+                    oidc_publisher_id="fakepublisherid",
+                ),
                 caveats.ProjectID(project_ids=["fakeprojectid"]),
                 caveats.Expiration(expires_at=900, not_before=0),
             ],
             oidc_publisher_id="fakepublisherid",
+            additional={"oidc": claims_input},
         )
     ]
     assert project.record_event.calls == [
         pretend.call(
             tag=EventTag.Project.ShortLivedAPITokenAdded,
-            ip_address="0.0.0.0",
+            request=request,
             additional={
                 "expires": 900,
                 "publisher_name": "fakepublishername",

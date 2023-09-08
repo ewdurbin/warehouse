@@ -192,14 +192,11 @@ def remove_project(project, request, flash=True):
             name=project.name,
             action="remove project",
             submitted_by=request.user,
-            submitted_from=request.remote_addr,
         )
     )
 
     request.db.delete(project)
-
-    # Flush so we can repeat this multiple times if necessary
-    request.db.flush()
+    request.db.flush()  # flush db now so we can repeat if necessary
 
     if flash:
         request.session.flash(f"Deleted the project {project.name!r}", queue="success")
@@ -211,7 +208,6 @@ def destroy_docs(project, request, flash=True):
             name=project.name,
             action="docdestroy",
             submitted_by=request.user,
-            submitted_from=request.remote_addr,
         )
     )
 

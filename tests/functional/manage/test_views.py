@@ -16,6 +16,7 @@ from webob.multidict import MultiDict
 
 from warehouse.accounts.interfaces import IPasswordBreachedService, IUserService
 from warehouse.manage import views
+from warehouse.manage.views import organizations as org_views
 from warehouse.organizations.interfaces import IOrganizationService
 from warehouse.organizations.models import OrganizationType
 
@@ -64,6 +65,7 @@ class TestManageOrganizations:
         user = UserFactory.create(name="old name")
         EmailFactory.create(primary=True, verified=True, public=True, user=user)
         db_request.user = user
+        db_request.organization_access = True
         db_request.method = "POST"
         db_request.path = "/manage/organizations/"
         db_request.POST = MultiDict(
@@ -79,19 +81,27 @@ class TestManageOrganizations:
                 ),
             }
         )
+        db_request.registry.settings[
+            "warehouse.organizations.max_undecided_organization_applications"
+        ] = 3
         send_email = pretend.call_recorder(lambda *a, **kw: None)
         monkeypatch.setattr(
-            views, "send_admin_new_organization_requested_email", send_email
-        )
-        monkeypatch.setattr(views, "send_new_organization_requested_email", send_email)
-
-        views.ManageOrganizationsViews(db_request).create_organization()
-        organization = organization_service.get_organization_by_name(
-            db_request.POST["name"]
+            org_views, "send_new_organization_requested_email", send_email
         )
 
-        assert organization.name == db_request.POST["name"]
-        assert organization.display_name == db_request.POST["display_name"]
-        assert organization.orgtype == OrganizationType[db_request.POST["orgtype"]]
-        assert organization.link_url == db_request.POST["link_url"]
-        assert organization.description == db_request.POST["description"]
+        org_views.ManageOrganizationsViews(db_request).create_organization_application()
+        organization_application = (
+            organization_service.get_organization_applications_by_name(
+                db_request.POST["name"]
+            )
+        )[0]
+
+        assert organization_application.name == db_request.POST["name"]
+        assert organization_application.display_name == db_request.POST["display_name"]
+        assert (
+            organization_application.orgtype
+            == OrganizationType[db_request.POST["orgtype"]]
+        )
+        assert organization_application.link_url == db_request.POST["link_url"]
+        assert organization_application.description == db_request.POST["description"]
+        assert organization_application.submitted_by == user

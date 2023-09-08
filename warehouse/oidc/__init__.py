@@ -10,9 +10,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from celery.schedules import crontab
+
 from warehouse.oidc.interfaces import IOIDCPublisherService
 from warehouse.oidc.services import OIDCPublisherServiceFactory
-from warehouse.oidc.utils import GITHUB_OIDC_ISSUER_URL
+from warehouse.oidc.tasks import compute_oidc_metrics
+from warehouse.oidc.utils import GITHUB_OIDC_ISSUER_URL, GOOGLE_OIDC_ISSUER_URL
 
 
 def includeme(config):
@@ -29,9 +32,22 @@ def includeme(config):
         IOIDCPublisherService,
         name="github",
     )
+    config.register_service_factory(
+        OIDCPublisherServiceFactory(
+            publisher="google",
+            issuer_url=GOOGLE_OIDC_ISSUER_URL,
+            service_class=oidc_publisher_service_class,
+        ),
+        IOIDCPublisherService,
+        name="google",
+    )
 
     # During deployments, we separate auth routes into their own subdomain
     # to simplify caching exclusion.
     auth = config.get_settings().get("auth.domain")
 
-    config.add_route("oidc.mint_token", "/_/oidc/github/mint-token", domain=auth)
+    config.add_route("oidc.audience", "/_/oidc/audience", domain=auth)
+    config.add_route("oidc.github.mint_token", "/_/oidc/github/mint-token", domain=auth)
+
+    # Compute OIDC metrics periodically
+    config.add_periodic_task(crontab(minute=0, hour="*"), compute_oidc_metrics)

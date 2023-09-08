@@ -15,6 +15,9 @@ import datetime
 import pretend
 import pytest
 
+from pyramid.httpexceptions import HTTPMethodNotAllowed
+from pyramid_rpc.xmlrpc import XmlRpcApplicationError
+
 from warehouse.legacy.api.xmlrpc import views as xmlrpc
 from warehouse.packaging.models import Classifier
 from warehouse.rate_limiting.interfaces import IRateLimiter
@@ -135,17 +138,17 @@ class TestSearch:
 
 
 def test_list_packages(db_request):
-    projects = [ProjectFactory.create() for _ in range(10)]
+    projects = ProjectFactory.create_batch(10)
     assert set(xmlrpc.list_packages(db_request)) == {p.name for p in projects}
 
 
 def test_list_packages_with_serial(db_request):
-    projects = [ProjectFactory.create() for _ in range(10)]
+    projects = ProjectFactory.create_batch(10)
     expected = {}
     for project in projects:
         expected.setdefault(project.name, 0)
-        for _ in range(10):
-            entry = JournalEntryFactory.create(name=project.name)
+        entries = JournalEntryFactory.create_batch(10, name=project.name)
+        for entry in entries:
             if entry.id > expected[project.name]:
                 expected[project.name] = entry.id
     assert xmlrpc.list_packages_with_serial(db_request) == expected
@@ -163,9 +166,9 @@ def test_package_hosting_mode_results(db_request):
 def test_user_packages(db_request):
     user = UserFactory.create()
     other_user = UserFactory.create()
-    owned_projects = [ProjectFactory.create() for _ in range(5)]
-    maintained_projects = [ProjectFactory.create() for _ in range(5)]
-    unowned_projects = [ProjectFactory.create() for _ in range(5)]
+    owned_projects = ProjectFactory.create_batch(5)
+    maintained_projects = ProjectFactory.create_batch(5)
+    unowned_projects = ProjectFactory.create_batch(5)
     for project in owned_projects:
         RoleFactory.create(project=project, user=user)
     for project in maintained_projects:
@@ -228,9 +231,9 @@ def test_package_data(domain, db_request):
 
 def test_package_releases(db_request):
     project1 = ProjectFactory.create()
-    releases1 = [ReleaseFactory.create(project=project1) for _ in range(10)]
+    releases1 = ReleaseFactory.create_batch(10, project=project1)
     project2 = ProjectFactory.create()
-    [ReleaseFactory.create(project=project2) for _ in range(10)]
+    ReleaseFactory.create_batch(10, project=project2)
     result = xmlrpc.package_releases(db_request, project1.name, show_hidden=False)
     assert (
         result
@@ -243,9 +246,9 @@ def test_package_releases(db_request):
 
 def test_package_releases_hidden(db_request):
     project1 = ProjectFactory.create()
-    releases1 = [ReleaseFactory.create(project=project1) for _ in range(10)]
+    releases1 = ReleaseFactory.create_batch(10, project=project1)
     project2 = ProjectFactory.create()
-    [ReleaseFactory.create(project=project2) for _ in range(10)]
+    ReleaseFactory.create_batch(10, project=project2)
     result = xmlrpc.package_releases(db_request, project1.name, show_hidden=True)
     assert result == [
         r.version for r in reversed(sorted(releases1, key=lambda x: x._pypi_ordering))
@@ -343,7 +346,7 @@ def test_release_urls(db_request):
             "md5_digest": file_.md5_digest,
             "sha256_digest": file_.sha256_digest,
             "digests": {"md5": file_.md5_digest, "sha256": file_.sha256_digest},
-            "has_sig": file_.has_signature,
+            "has_sig": False,
             "upload_time": file_.upload_time.isoformat() + "Z",
             "upload_time_iso_8601": file_.upload_time.isoformat() + "Z",
             "comment_text": file_.comment_text,
@@ -358,15 +361,11 @@ def test_release_urls(db_request):
 
 
 def test_package_roles(db_request):
-    project1, project2 = ProjectFactory.create(), ProjectFactory.create()
-    owners1 = [RoleFactory.create(project=project1) for _ in range(3)]
-    for _ in range(3):
-        RoleFactory.create(project=project2)
-    maintainers1 = [
-        RoleFactory.create(project=project1, role_name="Maintainer") for _ in range(3)
-    ]
-    for _ in range(3):
-        RoleFactory.create(project=project2, role_name="Maintainer")
+    project1, project2 = ProjectFactory.create_batch(2)
+    owners1 = RoleFactory.create_batch(3, project=project1)
+    RoleFactory.create_batch(3, project=project2)
+    maintainers1 = RoleFactory.create_batch(3, project=project1, role_name="Maintainer")
+    RoleFactory.create_batch(3, project=project2, role_name="Maintainer")
     result = xmlrpc.package_roles(db_request, project1.name)
     assert result == [
         (r.role_name, r.user.username)
@@ -382,11 +381,10 @@ def test_changelog_last_serial_none(db_request):
 
 
 def test_changelog_last_serial(db_request):
-    projects = [ProjectFactory.create() for _ in range(10)]
+    projects = ProjectFactory.create_batch(10)
     entries = []
     for project in projects:
-        for _ in range(10):
-            entries.append(JournalEntryFactory.create(name=project.name))
+        entries.extend(JournalEntryFactory.create_batch(10, name=project.name))
 
     expected = max(e.id for e in entries)
 
@@ -394,11 +392,10 @@ def test_changelog_last_serial(db_request):
 
 
 def test_changelog_since_serial(db_request):
-    projects = [ProjectFactory.create() for _ in range(10)]
+    projects = ProjectFactory.create_batch(10)
     entries = []
     for project in projects:
-        for _ in range(10):
-            entries.append(JournalEntryFactory.create(name=project.name))
+        entries.extend(JournalEntryFactory.create_batch(10, name=project.name))
 
     expected = [
         (
@@ -418,11 +415,10 @@ def test_changelog_since_serial(db_request):
 
 @pytest.mark.parametrize("with_ids", [True, False, None])
 def test_changelog(db_request, with_ids):
-    projects = [ProjectFactory.create() for _ in range(10)]
+    projects = ProjectFactory.create_batch(10)
     entries = []
     for project in projects:
-        for _ in range(10):
-            entries.append(JournalEntryFactory.create(name=project.name))
+        entries.extend(JournalEntryFactory.create_batch(10, name=project.name))
 
     entries = sorted(entries, key=lambda x: x.id)
 
@@ -463,13 +459,14 @@ def test_browse(db_request):
     for classifier in classifiers:
         db_request.db.add(classifier)
 
-    projects = [ProjectFactory.create() for _ in range(3)]
+    projects = ProjectFactory.create_batch(3)
     releases = []
     for project in projects:
-        for _ in range(10):
-            releases.append(
-                ReleaseFactory.create(project=project, _classifiers=[classifiers[0]])
+        releases.extend(
+            ReleaseFactory.create_batch(
+                10, project=project, _classifiers=[classifiers[0]]
             )
+        )
 
     releases = sorted(releases, key=lambda x: (x.project.name, x.version))
 
@@ -524,3 +521,10 @@ def test_multicall(pyramid_request):
 )
 def test_clean_for_xml(string, expected):
     assert xmlrpc._clean_for_xml(string) == expected
+
+
+def test_http_method_not_allowed_does_not_bubble_up(pyramid_request):
+    assert isinstance(
+        xmlrpc.exception_view(HTTPMethodNotAllowed(), pyramid_request),
+        XmlRpcApplicationError,
+    )

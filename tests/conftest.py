@@ -28,7 +28,7 @@ import stripe
 import webtest as _webtest
 
 from jinja2 import Environment, FileSystemLoader
-from psycopg2.errors import InvalidCatalogName
+from psycopg.errors import InvalidCatalogName
 from pyramid.i18n import TranslationString
 from pyramid.static import ManifestCacheBuster
 from pyramid_jinja2 import IJinja2Environment
@@ -60,24 +60,7 @@ from warehouse.subscriptions.interfaces import IBillingService, ISubscriptionSer
 
 from .common.db import Session
 from .common.db.accounts import EmailFactory, UserFactory
-
-
-def pytest_collection_modifyitems(items):
-    for item in items:
-        if not hasattr(item, "module"):  # e.g.: DoctestTextfile
-            continue
-
-        module_path = os.path.relpath(
-            item.module.__file__, os.path.commonprefix([__file__, item.module.__file__])
-        )
-
-        module_root_dir = module_path.split(os.pathsep)[0]
-        if module_root_dir.startswith("functional"):
-            item.add_marker(pytest.mark.functional)
-        elif module_root_dir.startswith("unit"):
-            item.add_marker(pytest.mark.unit)
-        else:
-            raise RuntimeError(f"Unknown test type (filename = {module_path})")
+from .common.db.ip_addresses import IpAddressFactory
 
 
 @contextmanager
@@ -85,15 +68,40 @@ def metrics_timing(*args, **kwargs):
     yield None
 
 
+def _event(
+    title,
+    text,
+    alert_type=None,
+    aggregation_key=None,
+    source_type_name=None,
+    date_happened=None,
+    priority=None,
+    tags=None,
+    hostname=None,
+):
+    return None
+
+
 @pytest.fixture
 def metrics():
     return pretend.stub(
-        event=pretend.call_recorder(lambda *args, **kwargs: None),
-        increment=pretend.call_recorder(lambda *args, **kwargs: None),
-        histogram=pretend.call_recorder(lambda *args, **kwargs: None),
-        timing=pretend.call_recorder(lambda *args, **kwargs: None),
+        event=pretend.call_recorder(lambda *args, **kwargs: _event(*args, **kwargs)),
+        gauge=pretend.call_recorder(
+            lambda metric, value, tags=None, sample_rate=1: None
+        ),
+        increment=pretend.call_recorder(
+            lambda metric, value=1, tags=None, sample_rate=1: None
+        ),
+        histogram=pretend.call_recorder(
+            lambda metric, value, tags=None, sample_rate=1: None
+        ),
+        timing=pretend.call_recorder(
+            lambda metric, value, tags=None, sample_rate=1: None
+        ),
         timed=pretend.call_recorder(
-            lambda *args, **kwargs: metrics_timing(*args, **kwargs)
+            lambda metric=None, tags=None, sample_rate=1, use_ms=None: metrics_timing(
+                metric=metric, tags=tags, sample_rate=sample_rate, use_ms=use_ms
+            )
         ),
     )
 
@@ -101,6 +109,23 @@ def metrics():
 @pytest.fixture
 def remote_addr():
     return "1.2.3.4"
+
+
+@pytest.fixture
+def remote_addr_hashed():
+    """
+    Static output of `hashlib.sha256(remote_addr.encode("utf8")).hexdigest()`
+    Created statically to prevent needing to calculate it every run.
+    """
+    return "6694f83c9f476da31f5df6bcc520034e7e57d421d247b9d34f49edbfc84a764c"
+
+
+@pytest.fixture
+def remote_addr_salted():
+    """
+    Output of `hashlib.sha256((remote_addr + "pepa").encode("utf8")).hexdigest()`
+    """
+    return "a69a49383d81404e4b1df297c7baa28e1cd6c4ee1495ed5d0ab165a63a147763"
 
 
 @pytest.fixture
@@ -162,15 +187,24 @@ def pyramid_services(
 
 
 @pytest.fixture
-def pyramid_request(pyramid_services, jinja, remote_addr):
+def pyramid_request(pyramid_services, jinja, remote_addr, remote_addr_hashed):
     pyramid.testing.setUp()
     dummy_request = pyramid.testing.DummyRequest()
     dummy_request.find_service = pyramid_services.find_service
     dummy_request.remote_addr = remote_addr
+    dummy_request.remote_addr_hashed = remote_addr_hashed
     dummy_request.authentication_method = pretend.stub()
     dummy_request._unauthenticated_userid = None
+    dummy_request.oidc_publisher = None
 
     dummy_request.registry.registerUtility(jinja, IJinja2Environment, name=".jinja2")
+
+    dummy_request._task_stub = pretend.stub(
+        delay=pretend.call_recorder(lambda *a, **kw: None)
+    )
+    dummy_request.task = pretend.call_recorder(
+        lambda *a, **kw: dummy_request._task_stub
+    )
 
     def localize(message, **kwargs):
         ts = TranslationString(message, **kwargs)
@@ -232,7 +266,7 @@ def database(request):
     def drop_database():
         janitor.drop()
 
-    return f"postgresql://{pg_user}@{pg_host}:{pg_port}/{pg_db}"
+    return f"postgresql+psycopg://{pg_user}@{pg_host}:{pg_port}/{pg_db}"
 
 
 class MockManifestCacheBuster(ManifestCacheBuster):
@@ -253,6 +287,7 @@ def app_config(database):
     settings = {
         "warehouse.prevent_esi": True,
         "warehouse.token": "insecure token",
+        "warehouse.ip_salt": "insecure salt",
         "camo.url": "http://localhost:9000/",
         "camo.key": "insecure key",
         "celery.broker_url": "amqp://",
@@ -263,15 +298,14 @@ def app_config(database):
         "ratelimit.url": "memory://",
         "elasticsearch.url": "https://localhost/warehouse",
         "files.backend": "warehouse.packaging.services.LocalFileStorage",
+        "archive_files.backend": "warehouse.packaging.services.LocalArchiveFileStorage",
         "simple.backend": "warehouse.packaging.services.LocalSimpleStorage",
         "docs.backend": "warehouse.packaging.services.LocalDocsStorage",
         "sponsorlogos.backend": "warehouse.admin.services.LocalSponsorLogoStorage",
         "billing.backend": "warehouse.subscriptions.services.MockStripeBillingService",
         "mail.backend": "warehouse.email.services.SMTPEmailSender",
-        "malware_check.backend": (
-            "warehouse.malware.services.PrinterMalwareCheckService"
-        ),
         "files.url": "http://localhost:7000/",
+        "archive_files.url": "http://localhost:7000/archive",
         "sessions.secret": "123456",
         "sessions.url": "redis://localhost:0/",
         "statuspage.url": "https://2p66nmmycsj3.statuspage.io",
@@ -322,9 +356,9 @@ def user_service(db_session, metrics, remote_addr):
 
 
 @pytest.fixture
-def project_service(db_session, remote_addr, metrics, ratelimiters=None):
+def project_service(db_session, metrics, ratelimiters=None):
     return packaging_services.ProjectService(
-        db_session, remote_addr, metrics, ratelimiters=ratelimiters
+        db_session, metrics, ratelimiters=ratelimiters
     )
 
 
@@ -337,6 +371,7 @@ def oidc_service(db_session):
         GITHUB_OIDC_ISSUER_URL,
         pretend.stub(),
         pretend.stub(),
+        pretend.stub(),
     )
 
 
@@ -346,10 +381,8 @@ def macaroon_service(db_session):
 
 
 @pytest.fixture
-def organization_service(db_session, remote_addr):
-    return organization_services.DatabaseOrganizationService(
-        db_session, remote_addr=remote_addr
-    )
+def organization_service(db_session):
+    return organization_services.DatabaseOrganizationService(db_session)
 
 
 @pytest.fixture
@@ -424,14 +457,17 @@ def db_request(pyramid_request, db_session):
     pyramid_request.db = db_session
     pyramid_request.flags = admin.flags.Flags(pyramid_request)
     pyramid_request.banned = admin.bans.Bans(pyramid_request)
+    pyramid_request.organization_access = True
+    pyramid_request.ip_address = IpAddressFactory.create(
+        ip_address=pyramid_request.remote_addr,
+        hashed_ip_address=pyramid_request.remote_addr_hashed,
+    )
     return pyramid_request
 
 
 @pytest.fixture
 def enable_organizations(db_request):
-    flag = db_request.db.query(AdminFlag).get(
-        AdminFlagValue.DISABLE_ORGANIZATIONS.value
-    )
+    flag = db_request.db.get(AdminFlag, AdminFlagValue.DISABLE_ORGANIZATIONS.value)
     flag.enabled = False
     yield
     flag.enabled = True
@@ -491,18 +527,6 @@ def webtest(app_config):
         yield _TestApp(app_config.make_wsgi_app())
     finally:
         app_config.registry["sqlalchemy.engine"].dispose()
-
-
-@pytest.fixture(scope="session")
-def monkeypatch_session():
-    # NOTE: This is a minor hack to avoid duplicate monkeypatching
-    # on every function scope for dummy_localize.
-    # https://github.com/pytest-dev/pytest/issues/1872#issuecomment-375108891
-    from _pytest.monkeypatch import MonkeyPatch
-
-    m = MonkeyPatch()
-    yield m
-    m.undo()
 
 
 class _MockRedis:

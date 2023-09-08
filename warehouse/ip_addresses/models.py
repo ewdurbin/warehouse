@@ -12,13 +12,16 @@
 import enum
 import ipaddress
 
+from datetime import datetime
+
 import sentry_sdk
 
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Enum, Index, sql
-from sqlalchemy.dialects.postgresql import INET
-from sqlalchemy.orm import validates
+from sqlalchemy import CheckConstraint, Enum, Index
+from sqlalchemy.dialects.postgresql import INET, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from warehouse import db
+from warehouse.utils.db.types import bool_false
 
 
 class BanReason(enum.Enum):
@@ -26,7 +29,6 @@ class BanReason(enum.Enum):
 
 
 class IpAddress(db.Model):
-
     __tablename__ = "ip_addresses"
     __table_args__ = (
         Index("bans_idx", "is_banned"),
@@ -34,18 +36,36 @@ class IpAddress(db.Model):
             "(is_banned AND ban_reason IS NOT NULL AND ban_date IS NOT NULL)"
             "OR (NOT is_banned AND ban_reason IS NULL AND ban_date IS NULL)"
         ),
+        {"comment": "Tracks IP Addresses that have modified PyPI state"},
     )
 
-    def __repr__(self):
-        return self.ip_address
+    def __repr__(self) -> str:
+        return str(self.ip_address)
 
-    ip_address = Column(INET, nullable=False, unique=True)
-    is_banned = Column(Boolean, nullable=False, server_default=sql.false())
-    ban_reason = Column(
+    def __lt__(self, other) -> bool:
+        return self.id < other.id
+
+    ip_address: Mapped[ipaddress.IPv4Address | ipaddress.IPv6Address] = mapped_column(
+        INET, unique=True, comment="Structured IP Address value"
+    )
+    hashed_ip_address: Mapped[str | None] = mapped_column(
+        unique=True, comment="Hash that represents an IP Address"
+    )
+    geoip_info: Mapped[dict | None] = mapped_column(
+        JSONB,
+        comment="JSON containing GeoIP data associated with an IP Address",
+    )
+
+    is_banned: Mapped[bool_false] = mapped_column(
+        comment="If True, this IP Address will be marked as banned",
+    )
+    ban_reason: Mapped[Enum | None] = mapped_column(
         Enum(BanReason, values_callable=lambda x: [e.value for e in x]),
-        nullable=True,
+        comment="Reason for banning, must be in the BanReason enumeration",
     )
-    ban_date = Column(DateTime, nullable=True)
+    ban_date: Mapped[datetime | None] = mapped_column(
+        comment="Date that IP Address was last marked as banned",
+    )
 
     @validates("ip_address")
     def validate_ip_address(self, key, ip_address):

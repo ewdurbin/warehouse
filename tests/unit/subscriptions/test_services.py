@@ -153,6 +153,26 @@ class TestMockStripeBillingService:
         assert customer is not None
         assert customer["id"]
 
+    def test_update_customer(self, billing_service, organization_service):
+        organization = OrganizationFactory.create()
+
+        customer = billing_service.create_customer(
+            name=organization.name,
+            description=organization.description,
+        )
+
+        assert customer is not None
+        assert customer["name"] == organization.name
+
+        customer = billing_service.update_customer(
+            customer_id=customer["id"],
+            name="wutangClan",
+            description=organization.description,
+        )
+
+        assert customer is not None
+        assert customer["name"] == "wutangClan"
+
     def test_create_checkout_session(self, billing_service, subscription_service):
         subscription_price = StripeSubscriptionPriceFactory.create()
         success_url = "http://what.ever"
@@ -507,6 +527,7 @@ class TestStripeSubscriptionService:
         )
 
         subscription_service.delete_subscription(subscription.id)
+        subscription_service.db.flush()
 
         assert subscription_service.get_subscription(subscription.id) is None
         assert not (
@@ -647,6 +668,7 @@ class TestStripeSubscriptionService:
         subscription_product = StripeSubscriptionProductFactory.create()
 
         subscription_service.delete_subscription_product(subscription_product.id)
+        subscription_service.db.flush()
 
         assert (
             subscription_service.get_subscription_product(subscription_product.id)
@@ -727,10 +749,9 @@ class TestStripeSubscriptionService:
         """
         subscription_price = StripeSubscriptionPriceFactory.create()
 
-        assert db_request.db.query(StripeSubscriptionPrice).get(subscription_price.id)
+        assert db_request.db.get(StripeSubscriptionPrice, subscription_price.id)
 
         subscription_service.delete_subscription_price(subscription_price.id)
+        subscription_service.db.flush()
 
-        assert not (
-            db_request.db.query(StripeSubscriptionPrice).get(subscription_price.id)
-        )
+        assert not (db_request.db.get(StripeSubscriptionPrice, subscription_price.id))

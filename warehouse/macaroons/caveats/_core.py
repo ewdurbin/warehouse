@@ -26,7 +26,6 @@ from pyramid.request import Request
 from warehouse.macaroons.caveats import _legacy
 
 T = TypeVar("T")
-S = TypeVar("S")
 
 
 class CaveatError(Exception):
@@ -65,7 +64,7 @@ class Caveat:
         return (self.tag,) + dataclasses.astuple(self)
 
     @classmethod
-    def __deserialize__(cls: type[S], data: Sequence) -> S:
+    def __deserialize__(cls: type[Caveat], data: Sequence) -> Caveat:
         kwargs = {}
         for i, field in enumerate(dataclasses.fields(cls)):
             if len(data) > i:
@@ -88,7 +87,6 @@ class Caveat:
 
 
 class _CaveatRegistry:
-
     _tags: dict[int, type[Caveat]]
 
     def __init__(self, *args: Any, **kwargs: Any):

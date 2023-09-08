@@ -92,6 +92,28 @@ class TestDatabaseMacaroonService:
         assert isinstance(dm, Macaroon)
         assert macaroon.id == dm.id
         assert macaroon.user == user
+        assert macaroon.additional is None
+
+    def test_find_from_raw_oidc(self, macaroon_service):
+        publisher = GitHubPublisherFactory.create()
+        claims = {"sha": "somesha", "ref": "someref"}
+        (
+            serialized,
+            macaroon,
+        ) = macaroon_service.create_macaroon(
+            "fake location",
+            "fake description",
+            [caveats.OIDCPublisher(oidc_publisher_id=str(publisher.id))],
+            oidc_publisher_id=publisher.id,
+            additional=claims,
+        )
+
+        dm = macaroon_service.find_from_raw(serialized)
+
+        assert isinstance(dm, Macaroon)
+        assert macaroon.id == dm.id
+        assert macaroon.oidc_publisher == publisher
+        assert macaroon.additional == claims
 
     @pytest.mark.parametrize(
         "raw_macaroon",
@@ -156,7 +178,10 @@ class TestDatabaseMacaroonService:
 
     def test_find_userid_oidc_macaroon(self, macaroon_service):
         publisher = GitHubPublisherFactory.create()
-        raw_macaroon, _, = macaroon_service.create_macaroon(
+        (
+            raw_macaroon,
+            _,
+        ) = macaroon_service.create_macaroon(
             "fake location",
             "fake description",
             [caveats.OIDCPublisher(oidc_publisher_id=str(publisher.id))],
@@ -305,6 +330,9 @@ class TestDatabaseMacaroonService:
         macaroon_service.delete_macaroon(macaroon_id)
 
         assert macaroon_service.find_macaroon(macaroon_id) is None
+
+    def test_delete_macaroon_no_macaroon(self, macaroon_service):
+        assert macaroon_service.delete_macaroon("no such macaroon") is None
 
     def test_get_macaroon_by_description_no_macaroon(self, macaroon_service):
         user = UserFactory.create()

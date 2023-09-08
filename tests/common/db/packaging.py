@@ -12,6 +12,7 @@
 
 import datetime
 import hashlib
+import random
 
 import factory
 import faker
@@ -112,6 +113,21 @@ class FileFactory(WarehouseFactory):
         )
     )
     size = factory.Faker("pyint")
+    packagetype = factory.LazyAttribute(
+        lambda _: random.choice(
+            [
+                "bdist_wheel",
+                "sdist",
+            ]
+        )
+    )
+
+
+class FileEventFactory(WarehouseFactory):
+    class Meta:
+        model = File.Event
+
+    source = factory.SubFactory(FileFactory)
 
 
 class RoleFactory(WarehouseFactory):

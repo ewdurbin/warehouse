@@ -95,11 +95,12 @@ class TestMessageVerifier:
         ("topics", "data", "error"),
         [
             ([], {}, "Unknown SignatureVersion"),
-            ([], {"SignatureVersion": "2"}, "Unknown SignatureVersion"),
+            ([], {"SignatureVersion": "1"}, "Unknown SignatureVersion"),
+            ([], {"SignatureVersion": "3"}, "Unknown SignatureVersion"),
             (
                 [],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "http://sns.us-west-2.amazonaws.com/cert.pem",
                 },
                 "Invalid scheme for SigningCertURL",
@@ -107,7 +108,7 @@ class TestMessageVerifier:
             (
                 [],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.attacker.com/cert.pem",
                 },
                 "Invalid location for SigningCertURL",
@@ -115,7 +116,7 @@ class TestMessageVerifier:
             (
                 [],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Signature": "SNYwQnC0BxjSo2E4aZFRiA==",
                     "Type": "Who Knows?",
@@ -125,7 +126,7 @@ class TestMessageVerifier:
             (
                 [],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Signature": "SNYwQnC0BxjSo2E4aZFRiA==",
                     "Type": "Notification",
@@ -141,7 +142,7 @@ class TestMessageVerifier:
             (
                 [],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Signature": VALID_SIGNATURE,
                     "Type": "Notification",
@@ -155,7 +156,7 @@ class TestMessageVerifier:
             (
                 [],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Signature": VALID_SIGNATURE,
                     "Type": "Notification",
@@ -173,7 +174,7 @@ class TestMessageVerifier:
             (
                 ["The topic I expected"],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Signature": VALID_SIGNATURE,
                     "Type": "Notification",
@@ -198,7 +199,9 @@ class TestMessageVerifier:
                 sns_privatekey, password=None, backend=default_backend()
             )
             signature_bytes = private_key.sign(
-                verifier._get_data_to_sign(data), PKCS1v15(), hashes.SHA1()
+                verifier._get_data_to_sign(data),
+                PKCS1v15(),
+                hashes.SHA256(),
             )
             data["Signature"] = base64.b64encode(signature_bytes)
 
@@ -211,7 +214,7 @@ class TestMessageVerifier:
             (
                 ["valid topic"],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Type": "Notification",
                     "Message": "This is My Message",
@@ -225,7 +228,7 @@ class TestMessageVerifier:
             (
                 ["valid topic", "another valid topic"],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Type": "Notification",
                     "Message": "This is My Message",
@@ -239,7 +242,7 @@ class TestMessageVerifier:
             (
                 ["valid topic"],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Type": "Notification",
                     "Subject": "This is a subject",
@@ -254,7 +257,7 @@ class TestMessageVerifier:
             (
                 ["valid topic"],
                 {
-                    "SignatureVersion": "1",
+                    "SignatureVersion": "2",
                     "SigningCertURL": "https://sns.us-west-2.amazonaws.com/cert.pem",
                     "Type": "SubscriptionConfirmation",
                     "Message": "This is My Message",
@@ -278,7 +281,9 @@ class TestMessageVerifier:
             sns_privatekey, password=None, backend=default_backend()
         )
         signature_bytes = private_key.sign(
-            verifier._get_data_to_sign(data), PKCS1v15(), hashes.SHA1()
+            verifier._get_data_to_sign(data),
+            PKCS1v15(),
+            hashes.SHA256(),
         )
         data["Signature"] = base64.b64encode(signature_bytes)
 

@@ -23,6 +23,7 @@ from sqlalchemy.exc import NoResultFound
 from warehouse.accounts.models import User
 from warehouse.email import send_email
 from warehouse.email.ses.models import EmailMessage
+from warehouse.events.tags import EventTag
 from warehouse.utils.paginate import paginate_url_factory
 
 
@@ -89,7 +90,7 @@ def email_mass(request):
     rows = list(csv.DictReader(wrapper))
     if rows:
         for row in rows:
-            user = request.db.query(User).get(row["user_id"])
+            user = request.db.get(User, row["user_id"])
             email = user.primary_email
 
             if email:
@@ -101,7 +102,7 @@ def email_mass(request):
                         "body_html": row.get("body_html"),
                     },
                     {
-                        "tag": "account:email:sent",
+                        "tag": EventTag.Account.EmailSent,
                         "user_id": user.id,
                         "additional": {
                             "from_": request.registry.settings.get("mail.sender"),

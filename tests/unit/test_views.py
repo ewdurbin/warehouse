@@ -15,6 +15,7 @@ import datetime
 import elasticsearch
 import pretend
 import pytest
+import sqlalchemy
 
 from pyramid.httpexceptions import (
     HTTPBadRequest,
@@ -258,6 +259,33 @@ class TestForbiddenView:
             )
         ]
 
+    @pytest.mark.parametrize(
+        "requested_path",
+        ("/manage/projects/", "/manage/account/two-factor/", "/manage/organizations/"),
+    )
+    def test_unverified_email_redirects(self, requested_path):
+        result = WarehouseDenied("Some summary", reason="unverified_email")
+        exc = pretend.stub(result=result)
+        request = pretend.stub(
+            authenticated_userid=1,
+            session=pretend.stub(flash=pretend.call_recorder(lambda x, queue: None)),
+            path_qs=requested_path,
+            route_url=pretend.call_recorder(lambda route, _query: "/manage/account/"),
+            _=lambda x: x,
+        )
+
+        resp = forbidden(exc, request)
+
+        assert resp.status_code == 303
+        assert resp.location == "/manage/account/"
+        assert request.session.flash.calls == [
+            pretend.call(
+                "You must verify your **primary** email address before you "
+                "can perform this action.",
+                queue="error",
+            )
+        ]
+
     def test_generic_warehousedeined(self, pyramid_config):
         result = WarehouseDenied(
             "This project requires two factor authentication to be enabled "
@@ -313,7 +341,6 @@ def test_opensearchxml(pyramid_request):
 
 class TestIndex:
     def test_index(self, db_request):
-
         project = ProjectFactory.create()
         release1 = ReleaseFactory.create(project=project)
         release1.created = datetime.date(2011, 1, 1)
@@ -602,7 +629,13 @@ def test_health():
     )
 
     assert health(request) == "OK"
-    assert request.db.execute.calls == [pretend.call("SELECT 1")]
+    assert len(request.db.execute.calls) == 1
+    assert len(request.db.execute.calls[0].args) == 1
+    assert len(request.db.execute.calls[0].kwargs) == 0
+    assert isinstance(
+        request.db.execute.calls[0].args[0], sqlalchemy.sql.expression.TextClause
+    )
+    assert request.db.execute.calls[0].args[0].text == "SELECT 1"
 
 
 class TestForceStatus:

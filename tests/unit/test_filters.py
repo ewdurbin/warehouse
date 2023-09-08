@@ -11,13 +11,15 @@
 # limitations under the License.
 
 import datetime
-import urllib.parse
 
 from functools import partial
 
 import packaging.version
+import packaging_legacy.version
 import pretend
 import pytest
+
+from urllib3.util import parse_url
 
 from warehouse import filters
 
@@ -112,7 +114,7 @@ def test_tojson(inp, expected):
 
 def test_urlparse():
     inp = "https://google.com/foo/bar?a=b"
-    expected = urllib.parse.urlparse(inp)
+    expected = parse_url(inp)
     assert filters.urlparse(inp) == expected
 
 
@@ -203,7 +205,11 @@ def test_format_package_type(inp, expected):
 
 
 @pytest.mark.parametrize(
-    ("inp", "expected"), [("1.0", packaging.version.Version("1.0"))]
+    ("inp", "expected"),
+    [
+        ("1.0", packaging.version.Version("1.0")),
+        ("dog", packaging_legacy.version.LegacyVersion("dog")),
+    ],
 )
 def test_parse_version(inp, expected):
     assert filters.parse_version(inp) == expected
@@ -263,7 +269,25 @@ def test_is_recent_none():
         ('"Foo Bar" <foo@bar.com>', "Foo Bar", "foo@bar.com"),
     ],
 )
-def test_format_author_email(meta_email, expected_name, expected_email):
-    author_name, author_email = filters.format_author_email(meta_email)
-    assert author_name == expected_name
-    assert author_email == expected_email
+def test_format_email(meta_email, expected_name, expected_email):
+    name, email = filters.format_email(meta_email)
+    assert name == expected_name
+    assert email == expected_email
+
+
+@pytest.mark.parametrize(
+    ("inp", "expected"),
+    [
+        ("foo", "foo"),  # no change
+        (" foo  bar ", " foo  bar "),  # U+001B : <control> ESCAPE [ESC]
+        ("foo \x1b bar", "foo  bar"),  # U+001B : <control> ESCAPE [ESC]
+        ("foo \x00 bar", "foo  bar"),  # U+0000 : <control> NULL
+        ("foo 🐍 bar", "foo 🐍 bar"),  # U+1F40D : SNAKE [snake] (emoji) [Python]
+        (None, None),  # no change
+    ],
+)
+def test_remove_invalid_xml_unicode(inp, expected):
+    """
+    Test that invalid XML unicode characters are removed.
+    """
+    assert filters.remove_invalid_xml_unicode(inp) == expected

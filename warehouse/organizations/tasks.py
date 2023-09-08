@@ -42,6 +42,20 @@ def update_organization_invitation_status(request):
         try:
             token_service.loads(invite.token)
         except TokenExpired:
+            invite.user.record_event(
+                tag=EventTag.Account.OrganizationRoleExpireInvite,
+                request=request,
+                additional={
+                    "organization_name": invite.organization.name,
+                },
+            )
+            invite.organization.record_event(
+                tag=EventTag.Organization.OrganizationRoleExpireInvite,
+                request=request,
+                additional={
+                    "target_user_id": str(invite.user.id),
+                },
+            )
             invite.invite_status = OrganizationInvitationStatus.Expired
 
 
@@ -60,9 +74,9 @@ def delete_declined_organizations(request):
     for organization in organizations:
         organization_service = request.find_service(IOrganizationService, context=None)
         # TODO: Cannot call this after deletion so how exactly do we handle this?
-        organization_service.record_event(
-            organization.id,
+        organization.record_event(
             tag=EventTag.Organization.OrganizationDelete,
+            request=request,
             additional={"deleted_by": "CRON"},
         )
         organization_service.delete_organization(organization.id)
@@ -74,9 +88,9 @@ def update_organziation_subscription_usage_record(request):
     organization_subscriptions = request.db.query(OrganizationStripeSubscription).all()
 
     # Call the Billing API to update the usage record of this subscription item
-    for organization_subscription in organization_subscriptions:
+    for org_subscription in organization_subscriptions:
         billing_service = request.find_service(IBillingService, context=None)
         billing_service.create_or_update_usage_record(
-            organization_subscription.subscription.subscription_item.subscription_item_id,  # type: ignore # noqa
-            len(organization_subscription.organization.users),
+            org_subscription.subscription.subscription_item.subscription_item_id,
+            len(org_subscription.organization.users),
         )

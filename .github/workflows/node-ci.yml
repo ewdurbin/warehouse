@@ -6,6 +6,7 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
+  workflow_dispatch:  # generally only for the "combine-prs" workflow
 permissions:
   contents: read
 concurrency:
@@ -26,10 +27,10 @@ jobs:
     name: ${{ matrix.name }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - uses: actions/setup-node@v3
         with:
-          node-version: 18.13.0
+          node-version: 20.5.0
           cache: 'npm'
       - name: Install Node dependencies
         run: npm ci

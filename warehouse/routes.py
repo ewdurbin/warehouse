@@ -151,6 +151,14 @@ def includeme(config):
         traverse="/{username}",
         domain=warehouse,
     )
+    config.add_route("accounts.search", "/accounts/search/", domain=warehouse)
+    config.add_route(
+        "organizations.profile",
+        "/org/{organization}/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization}",
+        domain=warehouse,
+    )
     config.add_route("accounts.login", "/account/login/", domain=warehouse)
     config.add_route("accounts.two-factor", "/account/two-factor/", domain=warehouse)
     config.add_route(
@@ -294,6 +302,13 @@ def includeme(config):
     config.add_route(
         "manage.organization.revoke_invite",
         "/manage/organization/{organization_name}/people/revoke_invite/",
+        factory="warehouse.organizations.models:OrganizationFactory",
+        traverse="/{organization_name}",
+        domain=warehouse,
+    )
+    config.add_route(
+        "manage.organization.resend_invite",
+        "/manage/organization/{organization_name}/people/resend_invite/",
         factory="warehouse.organizations.models:OrganizationFactory",
         traverse="/{organization_name}",
         domain=warehouse,

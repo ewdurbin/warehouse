@@ -10,21 +10,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
-
-from sqlalchemy import func
+from sqlalchemy import delete, func, orm, select
 from sqlalchemy.exc import NoResultFound
 from zope.interface import implementer
 
+from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.models import User
+from warehouse.email import (
+    send_admin_new_organization_approved_email,
+    send_admin_new_organization_declined_email,
+    send_new_organization_approved_email,
+    send_new_organization_declined_email,
+)
+from warehouse.events.tags import EventTag
 from warehouse.organizations.interfaces import IOrganizationService
 from warehouse.organizations.models import (
     Organization,
+    OrganizationApplication,
     OrganizationInvitation,
     OrganizationInvitationStatus,
     OrganizationNameCatalog,
     OrganizationProject,
     OrganizationRole,
+    OrganizationRoleType,
     OrganizationStripeCustomer,
     OrganizationStripeSubscription,
     Team,
@@ -38,16 +46,22 @@ NAME_FIELD = "name"
 
 @implementer(IOrganizationService)
 class DatabaseOrganizationService:
-    def __init__(self, db_session, remote_addr):
+    def __init__(self, db_session):
         self.db = db_session
-        self.remote_addr = remote_addr
 
     def get_organization(self, organization_id):
         """
         Return the organization object that represents the given organizationid,
         or None if there is no organization for that ID.
         """
-        return self.db.query(Organization).get(organization_id)
+        return self.db.get(Organization, organization_id)
+
+    def get_organization_application(self, organization_application_id):
+        """
+        Return the organization application object that represents the given
+        organization_application_id, or None if there is no application for that ID.
+        """
+        return self.db.get(OrganizationApplication, organization_application_id)
 
     def get_organization_by_name(self, name):
         """
@@ -58,6 +72,23 @@ class DatabaseOrganizationService:
         return (
             None if organization_id is None else self.get_organization(organization_id)
         )
+
+    def get_organization_applications_by_name(
+        self, name, submitted_by=None, undecided=False
+    ):
+        """
+        Return the organization object corresponding with the given organization name,
+        or None if there is no organization with that name.
+        """
+        normalized_name = func.normalize_pep426_name(name)
+        query = self.db.query(OrganizationApplication).filter(
+            OrganizationApplication.normalized_name == normalized_name
+        )
+        if submitted_by is not None:
+            query = query.filter(OrganizationApplication.submitted_by == submitted_by)
+        if undecided is True:
+            query = query.filter(OrganizationApplication.is_approved.is_(None))
+        return query.all()
 
     def find_organizationid(self, name):
         """
@@ -80,19 +111,7 @@ class DatabaseOrganizationService:
         """
         Return a list of all organization objects, or None if there are none.
         """
-        return self.db.query(Organization).order_by(Organization.name).all()
-
-    def get_organizations_needing_approval(self):
-        """
-        Return a list of all organization objects in need of approval or None
-        if there are currently no organization requests.
-        """
-        return (
-            self.db.query(Organization)
-            .filter(Organization.is_approved == None)  # noqa: E711
-            .order_by(Organization.name)
-            .all()
-        )
+        return self.db.scalars(select(Organization).order_by(Organization.name)).all()
 
     def get_organizations_by_user(self, user_id):
         """
@@ -106,24 +125,148 @@ class DatabaseOrganizationService:
             .all()
         )
 
-    def add_organization(self, name, display_name, orgtype, link_url, description):
+    def add_organization_application(
+        self, name, display_name, orgtype, link_url, description, submitted_by
+    ):
         """
-        Accepts a organization object, and attempts to create an organization with those
-        attributes.
+        Accepts organization application details, creates an OrganizationApplication
+        with those attributes.
         """
-        organization = Organization(
+        organization_application = OrganizationApplication(
             name=name,
             display_name=display_name,
             orgtype=orgtype,
             link_url=link_url,
             description=description,
+            submitted_by=submitted_by,
+        )
+        self.db.add(organization_application)
+
+        return organization_application
+
+    def approve_organization_application(self, organization_application_id, request):
+        """
+        Performs operations necessary to approve an OrganizationApplication
+        """
+        user_service = request.find_service(IUserService, context=None)
+
+        organization_application = self.get_organization_application(
+            organization_application_id
+        )
+
+        organization = Organization(
+            name=organization_application.name,
+            display_name=organization_application.display_name,
+            orgtype=organization_application.orgtype,
+            link_url=organization_application.link_url,
+            description=organization_application.description,
+            is_active=True,
+            is_approved=True,
         )
         self.db.add(organization)
-        self.db.flush()
+        organization.record_event(
+            tag=EventTag.Organization.OrganizationCreate,
+            request=request,
+            additional={
+                "created_by_user_id": str(organization_application.submitted_by.id),
+                "redact_ip": True,
+            },
+        )
+        self.db.flush()  # flush the db now so organization.id is available
+
+        organization_application.is_approved = True
+        organization_application.organization = organization
 
         self.add_catalog_entry(organization.id)
+        organization.record_event(
+            tag=EventTag.Organization.CatalogEntryAdd,
+            request=request,
+            additional={
+                "submitted_by_user_id": str(organization_application.submitted_by.id),
+                "redact_ip": True,
+            },
+        )
+
+        self.add_organization_role(
+            organization.id,
+            organization_application.submitted_by.id,
+            OrganizationRoleType.Owner,
+        )
+        organization.record_event(
+            tag=EventTag.Organization.OrganizationRoleAdd,
+            request=request,
+            additional={
+                "submitted_by_user_id": str(organization_application.submitted_by.id),
+                "role_name": "Owner",
+                "target_user_id": str(organization_application.submitted_by.id),
+                "redact_ip": True,
+            },
+        )
+        organization_application.submitted_by.record_event(
+            tag=EventTag.Account.OrganizationRoleAdd,
+            request=request,
+            additional={
+                "submitted_by_user_id": str(organization_application.submitted_by.id),
+                "organization_name": organization.name,
+                "role_name": "Owner",
+                "redact_ip": True,
+            },
+        )
+        organization.record_event(
+            tag=EventTag.Organization.OrganizationApprove,
+            request=request,
+            additional={"approved_by_user_id": str(request.user.id)},
+        )
+
+        message = request.params.get("message", "")
+        send_admin_new_organization_approved_email(
+            request,
+            user_service.get_admin_user(),
+            organization_name=organization.name,
+            initiator_username=organization_application.submitted_by.username,
+            message=message,
+        )
+        send_new_organization_approved_email(
+            request,
+            organization_application.submitted_by,
+            organization_name=organization.name,
+            message=message,
+        )
+
+        for competing_application in self.get_organization_applications_by_name(
+            organization_application.name, undecided=True
+        ):
+            self.decline_organization_application(competing_application.id, request)
 
         return organization
+
+    def decline_organization_application(self, organization_application_id, request):
+        """
+        Performs operations necessary to decline an OrganizationApplication
+        """
+        user_service = request.find_service(IUserService, context=None)
+
+        organization_application = self.get_organization_application(
+            organization_application_id
+        )
+        organization_application.is_approved = False
+
+        message = request.params.get("message", "")
+        send_admin_new_organization_declined_email(
+            request,
+            user_service.get_admin_user(),
+            organization_name=organization_application.name,
+            initiator_username=organization_application.submitted_by.username,
+            message=message,
+        )
+        send_new_organization_declined_email(
+            request,
+            organization_application.submitted_by,
+            organization_name=organization_application.name,
+            message=message,
+        )
+
+        return organization_application
 
     def add_catalog_entry(self, organization_id):
         """
@@ -147,7 +290,6 @@ class DatabaseOrganizationService:
             )
         except NoResultFound:
             self.db.add(catalog_entry)
-            self.db.flush()
 
         return catalog_entry
 
@@ -156,7 +298,7 @@ class DatabaseOrganizationService:
         Return the org role object that represents the given org role id,
         or None if there is no organization role for that ID.
         """
-        return self.db.query(OrganizationRole).get(organization_role_id)
+        return self.db.get(OrganizationRole, organization_role_id)
 
     def get_organization_role_by_user(self, organization_id, user_id):
         """
@@ -198,7 +340,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.add(role)
-        self.db.flush()
 
         return role
 
@@ -209,14 +350,13 @@ class DatabaseOrganizationService:
         role = self.get_organization_role(organization_role_id)
 
         self.db.delete(role)
-        self.db.flush()
 
     def get_organization_invite(self, organization_invite_id):
         """
         Return the org invite object that represents the given org invite id,
         or None if there is no organization invite for that ID.
         """
-        return self.db.query(OrganizationInvitation).get(organization_invite_id)
+        return self.db.get(OrganizationInvitation, organization_invite_id)
 
     def get_organization_invite_by_user(self, organization_id, user_id):
         """
@@ -274,7 +414,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.add(organization_invite)
-        self.db.flush()
 
         return organization_invite
 
@@ -285,31 +424,6 @@ class DatabaseOrganizationService:
         organization_invite = self.get_organization_invite(organization_invite_id)
 
         self.db.delete(organization_invite)
-        self.db.flush()
-
-    def approve_organization(self, organization_id):
-        """
-        Performs operations necessary to approve an Organization
-        """
-        organization = self.get_organization(organization_id)
-        organization.is_active = True
-        organization.is_approved = True
-        organization.date_approved = datetime.datetime.now()
-        # self.db.flush()
-
-        return organization
-
-    def decline_organization(self, organization_id):
-        """
-        Performs operations necessary to reject approval of an Organization
-        """
-        organization = self.get_organization(organization_id)
-        organization.is_active = False
-        organization.is_approved = False
-        organization.date_approved = datetime.datetime.now()
-        # self.db.flush()
-
-        return organization
 
     def delete_organization(self, organization_id):
         """
@@ -352,17 +466,15 @@ class DatabaseOrganizationService:
         self.delete_teams_by_organization(organization_id)
         # Delete organization
         self.db.delete(organization)
-        self.db.flush()
 
     def rename_organization(self, organization_id, name):
         """
         Performs operations necessary to rename an Organization
         """
         organization = self.get_organization(organization_id)
-
         organization.name = name
-        self.db.flush()
 
+        self.db.flush()  # flush db now so organization.normalized_name available
         self.add_catalog_entry(organization_id)
 
         return organization
@@ -405,7 +517,10 @@ class DatabaseOrganizationService:
         )
 
         self.db.add(organization_project)
-        self.db.flush()
+        self.db.flush()  # Flush db so we can address the organization related object
+
+        # Mark Organization as dirty, so purges will happen
+        orm.attributes.flag_dirty(organization_project.organization)
 
         return organization_project
 
@@ -418,7 +533,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.delete(organization_project)
-        self.db.flush()
 
     def get_organization_subscription(self, organization_id, subscription_id):
         """
@@ -444,7 +558,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.add(organization_subscription)
-        self.db.flush()
 
         return organization_subscription
 
@@ -457,7 +570,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.delete(organization_subscription)
-        self.db.flush()
 
     def get_organization_stripe_customer(self, organization_id):
         """
@@ -482,7 +594,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.add(organization_stripe_customer)
-        self.db.flush()
 
         return organization_stripe_customer
 
@@ -491,13 +602,17 @@ class DatabaseOrganizationService:
         Return a list of all team objects for the specified organization,
         or None if there are none.
         """
-        return self.db.query(Team).filter(Team.organization_id == organization_id).all()
+        return (
+            self.db.execute(select(Team).where(Team.organization_id == organization_id))
+            .scalars()
+            .all()
+        )
 
     def get_team(self, team_id):
         """
         Return a team object for the specified identifier,
         """
-        return self.db.query(Team).get(team_id)
+        return self.db.get(Team, team_id)
 
     def find_teamid(self, organization_id, team_name):
         """
@@ -540,7 +655,6 @@ class DatabaseOrganizationService:
             organization_id=organization_id,
         )
         self.db.add(team)
-        self.db.flush()
 
         return team
 
@@ -551,7 +665,6 @@ class DatabaseOrganizationService:
         team = self.get_team(team_id)
 
         team.name = name
-        self.db.flush()
 
         return team
 
@@ -561,12 +674,11 @@ class DatabaseOrganizationService:
         """
         team = self.get_team(team_id)
         # Delete team members
-        self.db.query(TeamRole).filter_by(team=team).delete()
+        self.db.execute(delete(TeamRole).filter_by(team=team))
         # Delete projects
-        self.db.query(TeamProjectRole).filter_by(team=team).delete()
+        self.db.execute(delete(TeamProjectRole).filter_by(team=team))
         # Delete team
-        self.db.delete(team)
-        self.db.flush()
+        self.db.execute(delete(Team).where(Team.id == team_id))
 
     def delete_teams_by_organization(self, organization_id):
         """
@@ -580,7 +692,7 @@ class DatabaseOrganizationService:
         """
         Return the team role object that represents the given team role id,
         """
-        return self.db.query(TeamRole).get(team_role_id)
+        return self.db.get(TeamRole, team_role_id)
 
     def get_team_roles(self, team_id):
         """
@@ -601,7 +713,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.add(member)
-        self.db.flush()
 
         return member
 
@@ -612,14 +723,13 @@ class DatabaseOrganizationService:
         member = self.get_team_role(team_role_id)
 
         self.db.delete(member)
-        self.db.flush()
 
     def get_team_project_role(self, team_project_role_id):
         """
         Return the team project role object that
         represents the given team project role id,
         """
-        return self.db.query(TeamProjectRole).get(team_project_role_id)
+        return self.db.get(TeamProjectRole, team_project_role_id)
 
     def add_team_project_role(self, team_id, project_id, role_name):
         """
@@ -632,7 +742,6 @@ class DatabaseOrganizationService:
         )
 
         self.db.add(team_project_role)
-        self.db.flush()
 
         return team_project_role
 
@@ -643,20 +752,7 @@ class DatabaseOrganizationService:
         team_project_role = self.get_team_project_role(team_project_role_id)
 
         self.db.delete(team_project_role)
-        self.db.flush()
-
-    def record_event(self, organization_id, *, tag, additional=None):
-        """
-        Creates a new Organization.Event for the given organization with the given
-        tag, IP address, and additional metadata.
-
-        Returns the event.
-        """
-        organization = self.get_organization(organization_id)
-        return organization.record_event(
-            tag=tag, ip_address=self.remote_addr, additional=additional
-        )
 
 
 def database_organization_factory(context, request):
-    return DatabaseOrganizationService(request.db, remote_addr=request.remote_addr)
+    return DatabaseOrganizationService(request.db)

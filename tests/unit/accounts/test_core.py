@@ -16,6 +16,7 @@ import freezegun
 import pretend
 import pytest
 
+from celery.schedules import crontab
 from pyramid.httpexceptions import HTTPUnauthorized
 
 from warehouse import accounts
@@ -34,11 +35,16 @@ from warehouse.accounts.services import (
     TokenServiceFactory,
     database_login_factory,
 )
+from warehouse.accounts.tasks import compute_user_metrics
 from warehouse.errors import BasicAuthBreachedPassword, BasicAuthFailedPassword
 from warehouse.events.tags import EventTag
+from warehouse.oidc.interfaces import SignedClaims
+from warehouse.oidc.models import OIDCPublisher
+from warehouse.oidc.utils import OIDCContext
 from warehouse.rate_limiting import IRateLimiter, RateLimit
 
 from ...common.db.accounts import UserFactory
+from ...common.db.oidc import GitHubPublisherFactory
 
 
 class TestLogin:
@@ -91,7 +97,7 @@ class TestLogin:
         )
         assert service.find_userid.calls == [pretend.call("myuser")]
         assert service.get_user.calls == [pretend.call(1)]
-        assert service.is_disabled.calls == [pretend.call(1)]
+        assert service.is_disabled.calls == []
         assert service.check_password.calls == [
             pretend.call(
                 1,
@@ -102,12 +108,40 @@ class TestLogin:
         assert user.record_event.calls == [
             pretend.call(
                 tag=EventTag.Account.LoginFailure,
-                ip_address="1.2.3.4",
+                request=pyramid_request,
                 additional={"reason": "invalid_password", "auth_method": "basic"},
             )
         ]
 
     def test_with_disabled_user_no_reason(self, pyramid_request, pyramid_services):
+        user = pretend.stub(
+            id=1,
+            record_event=pretend.call_recorder(lambda *a, **kw: None),
+        )
+        service = pretend.stub(
+            get_user=pretend.call_recorder(lambda user_id: user),
+            find_userid=pretend.call_recorder(lambda username: 1),
+            check_password=pretend.call_recorder(
+                lambda userid, password, tags=None: True
+            ),
+            is_disabled=pretend.call_recorder(lambda user_id: (True, None)),
+        )
+        pyramid_services.register_service(service, IUserService, None)
+        pyramid_services.register_service(
+            pretend.stub(), IPasswordBreachedService, None
+        )
+        pyramid_request.matched_route = pretend.stub(name="forklift.legacy.file_upload")
+        pyramid_request.help_url = pretend.call_recorder(lambda **kw: "/the/help/url/")
+
+        with pytest.raises(HTTPUnauthorized) as excinfo:
+            assert _basic_auth_check("myuser", "mypass", pyramid_request) is None
+
+        assert excinfo.value.status == "401 Account is disabled."
+        assert service.find_userid.calls == [pretend.call("myuser")]
+        assert service.get_user.calls == [pretend.call(1)]
+        assert service.is_disabled.calls == [pretend.call(1)]
+
+    def test_with_disabled_user_badpass(self, pyramid_request, pyramid_services):
         user = pretend.stub(
             id=1,
             record_event=pretend.call_recorder(lambda *a, **kw: None),
@@ -127,13 +161,30 @@ class TestLogin:
         pyramid_request.matched_route = pretend.stub(name="forklift.legacy.file_upload")
         pyramid_request.help_url = pretend.call_recorder(lambda **kw: "/the/help/url/")
 
-        with pytest.raises(HTTPUnauthorized) as excinfo:
+        with pytest.raises(BasicAuthFailedPassword) as excinfo:
             assert _basic_auth_check("myuser", "mypass", pyramid_request) is None
 
-        assert excinfo.value.status == "401 Account is disabled."
+        assert excinfo.value.status == (
+            "403 Invalid or non-existent authentication information. "
+            "See /the/help/url/ for more information."
+        )
         assert service.find_userid.calls == [pretend.call("myuser")]
         assert service.get_user.calls == [pretend.call(1)]
-        assert service.is_disabled.calls == [pretend.call(1)]
+        assert service.is_disabled.calls == []
+        assert service.check_password.calls == [
+            pretend.call(
+                1,
+                "mypass",
+                tags=["mechanism:basic_auth", "method:auth", "auth_method:basic"],
+            )
+        ]
+        assert user.record_event.calls == [
+            pretend.call(
+                tag=EventTag.Account.LoginFailure,
+                request=pyramid_request,
+                additional={"reason": "invalid_password", "auth_method": "basic"},
+            )
+        ]
 
     def test_with_disabled_user_compromised_pw(self, pyramid_request, pyramid_services):
         user = pretend.stub(id=1)
@@ -141,7 +192,7 @@ class TestLogin:
             get_user=pretend.call_recorder(lambda user_id: user),
             find_userid=pretend.call_recorder(lambda username: 1),
             check_password=pretend.call_recorder(
-                lambda userid, password, tags=None: False
+                lambda userid, password, tags=None: True
             ),
             is_disabled=pretend.call_recorder(
                 lambda user_id: (True, DisableReason.CompromisedPassword)
@@ -162,9 +213,46 @@ class TestLogin:
         assert service.find_userid.calls == [pretend.call("myuser")]
         assert service.get_user.calls == [pretend.call(1)]
         assert service.is_disabled.calls == [pretend.call(1)]
-        assert service.check_password.calls == []
+        assert service.check_password.calls == [
+            pretend.call(
+                1,
+                "mypass",
+                tags=["mechanism:basic_auth", "method:auth", "auth_method:basic"],
+            )
+        ]
 
     def test_with_disabled_user_frozen(self, pyramid_request, pyramid_services):
+        user = pretend.stub(
+            id=1,
+            record_event=pretend.call_recorder(lambda *a, **kw: None),
+            is_frozen=True,
+        )
+        service = pretend.stub(
+            get_user=pretend.call_recorder(lambda user_id: user),
+            find_userid=pretend.call_recorder(lambda username: 1),
+            check_password=pretend.call_recorder(
+                lambda userid, password, tags=None: True
+            ),
+            is_disabled=pretend.call_recorder(
+                lambda user_id: (True, DisableReason.AccountFrozen)
+            ),
+        )
+        pyramid_services.register_service(service, IUserService, None)
+        pyramid_services.register_service(
+            pretend.stub(), IPasswordBreachedService, None
+        )
+        pyramid_request.matched_route = pretend.stub(name="forklift.legacy.file_upload")
+        pyramid_request.help_url = pretend.call_recorder(lambda **kw: "/the/help/url/")
+
+        with pytest.raises(HTTPUnauthorized) as excinfo:
+            assert _basic_auth_check("myuser", "mypass", pyramid_request) is None
+
+        assert excinfo.value.status == "401 Account is frozen."
+        assert service.find_userid.calls == [pretend.call("myuser")]
+        assert service.get_user.calls == [pretend.call(1)]
+        assert service.is_disabled.calls == [pretend.call(1)]
+
+    def test_with_disabled_user_frozen_badpass(self, pyramid_request, pyramid_services):
         user = pretend.stub(
             id=1,
             record_event=pretend.call_recorder(lambda *a, **kw: None),
@@ -187,13 +275,30 @@ class TestLogin:
         pyramid_request.matched_route = pretend.stub(name="forklift.legacy.file_upload")
         pyramid_request.help_url = pretend.call_recorder(lambda **kw: "/the/help/url/")
 
-        with pytest.raises(HTTPUnauthorized) as excinfo:
+        with pytest.raises(BasicAuthFailedPassword) as excinfo:
             assert _basic_auth_check("myuser", "mypass", pyramid_request) is None
 
-        assert excinfo.value.status == "401 Account is frozen."
+        assert excinfo.value.status == (
+            "403 Invalid or non-existent authentication information. "
+            "See /the/help/url/ for more information."
+        )
         assert service.find_userid.calls == [pretend.call("myuser")]
         assert service.get_user.calls == [pretend.call(1)]
-        assert service.is_disabled.calls == [pretend.call(1)]
+        assert service.is_disabled.calls == []
+        assert service.check_password.calls == [
+            pretend.call(
+                1,
+                "mypass",
+                tags=["mechanism:basic_auth", "method:auth", "auth_method:basic"],
+            )
+        ]
+        assert user.record_event.calls == [
+            pretend.call(
+                tag=EventTag.Account.LoginFailure,
+                request=pyramid_request,
+                additional={"reason": "invalid_password", "auth_method": "basic"},
+            )
+        ]
 
     def test_with_valid_password(self, monkeypatch, pyramid_request, pyramid_services):
         user = pretend.stub(
@@ -242,7 +347,7 @@ class TestLogin:
         assert service.update_user.calls == [pretend.call(2, last_login=now)]
         assert user.record_event.calls == [
             pretend.call(
-                ip_address="1.2.3.4",
+                request=pyramid_request,
                 tag=EventTag.Account.LoginSuccess,
                 additional={"auth_method": "basic"},
             )
@@ -265,7 +370,7 @@ class TestLogin:
             ),
             is_disabled=pretend.call_recorder(lambda user_id: (False, None)),
             disable_password=pretend.call_recorder(
-                lambda user_id, reason=None, ip_address="127.0.0.1": None
+                lambda user_id, request, reason=None: None
             ),
         )
         breach_service = pretend.stub(
@@ -299,7 +404,9 @@ class TestLogin:
         ]
         assert service.disable_password.calls == [
             pretend.call(
-                2, reason=DisableReason.CompromisedPassword, ip_address="1.2.3.4"
+                2,
+                pyramid_request,
+                reason=DisableReason.CompromisedPassword,
             )
         ]
         assert send_email.calls == [pretend.call(pyramid_request, user)]
@@ -323,6 +430,58 @@ class TestUser:
         assert accounts._user(request) is None
 
 
+class TestOIDCPublisherAndClaims:
+    def test_with_oidc_publisher(self, db_request):
+        publisher = GitHubPublisherFactory.create()
+        assert isinstance(publisher, OIDCPublisher)
+        claims = SignedClaims({"foo": "bar"})
+
+        request = pretend.stub(identity=OIDCContext(publisher, claims))
+
+        assert accounts._oidc_publisher(request) is publisher
+        assert accounts._oidc_claims(request) is claims
+
+    def test_without_oidc_publisher_identity(self):
+        nonpublisher = pretend.stub()
+        request = pretend.stub(identity=nonpublisher)
+
+        assert accounts._oidc_publisher(request) is None
+        assert accounts._oidc_claims(request) is None
+
+    def test_without_identity(self):
+        request = pretend.stub(identity=None)
+        assert accounts._oidc_publisher(request) is None
+        assert accounts._oidc_claims(request) is None
+
+
+class TestOrganizationAccess:
+    @pytest.mark.parametrize(
+        ["identity", "flag", "orgs", "expected"],
+        [
+            (False, True, [], False),  # Unauth'd always have no access
+            (False, False, [], False),  # Unauth'd always have no access
+            (True, False, [], True),  # Flag allows all authenticated users
+            (True, True, [], False),  # Flag blocks all authenticated users without orgs
+            (
+                True,
+                True,
+                [pretend.stub()],
+                True,
+            ),  # Flag allows users with organizations
+        ],
+    )
+    def test_organization_access(self, db_session, identity, flag, orgs, expected):
+        user = None if not identity else UserFactory()
+        request = pretend.stub(
+            identity=user,
+            find_service=lambda interface, context=None: pretend.stub(
+                get_organizations_by_user=lambda x: orgs
+            ),
+            flags=pretend.stub(enabled=lambda flag_name: flag),
+        )
+        assert expected == accounts._organization_access(request)
+
+
 class TestUnauthenticatedUserid:
     def test_unauthenticated_userid(self):
         request = pretend.stub()
@@ -330,14 +489,8 @@ class TestUnauthenticatedUserid:
 
 
 def test_includeme(monkeypatch):
-    authz_obj = pretend.stub()
-    authz_cls = pretend.call_recorder(lambda *a, **kw: authz_obj)
-    monkeypatch.setattr(accounts, "ACLAuthorizationPolicy", authz_cls)
-    monkeypatch.setattr(accounts, "MacaroonAuthorizationPolicy", authz_cls)
-    monkeypatch.setattr(accounts, "TwoFactorAuthorizationPolicy", authz_cls)
-
     multi_policy_obj = pretend.stub()
-    multi_policy_cls = pretend.call_recorder(lambda ps, authz: multi_policy_obj)
+    multi_policy_cls = pretend.call_recorder(lambda ps: multi_policy_obj)
     monkeypatch.setattr(accounts, "MultiSecurityPolicy", multi_policy_cls)
 
     session_policy_obj = pretend.stub()
@@ -361,6 +514,7 @@ def test_includeme(monkeypatch):
                 "warehouse.account.email_add_ratelimit_string": "2 per day",
                 "warehouse.account.verify_email_ratelimit_string": "3 per 6 hours",
                 "warehouse.account.password_reset_ratelimit_string": "5 per day",
+                "warehouse.account.accounts_search_ratelimit_string": "100 per hour",
             }
         ),
         register_service_factory=pretend.call_recorder(
@@ -370,6 +524,7 @@ def test_includeme(monkeypatch):
         set_security_policy=pretend.call_recorder(lambda p: None),
         maybe_dotted=pretend.call_recorder(lambda path: path),
         add_route_predicate=pretend.call_recorder(lambda name, cls: None),
+        add_periodic_task=pretend.call_recorder(lambda *a, **kw: None),
     )
 
     accounts.includeme(config)
@@ -382,6 +537,11 @@ def test_includeme(monkeypatch):
         pretend.call(TokenServiceFactory(name="email"), ITokenService, name="email"),
         pretend.call(
             TokenServiceFactory(name="two_factor"), ITokenService, name="two_factor"
+        ),
+        pretend.call(
+            TokenServiceFactory(name="remember_device"),
+            ITokenService,
+            name="remember_device",
         ),
         pretend.call(
             HaveIBeenPwnedPasswordBreachedService.create_service,
@@ -399,14 +559,28 @@ def test_includeme(monkeypatch):
         pretend.call(RateLimit("2 per day"), IRateLimiter, name="email.add"),
         pretend.call(RateLimit("5 per day"), IRateLimiter, name="password.reset"),
         pretend.call(RateLimit("3 per 6 hours"), IRateLimiter, name="email.verify"),
+        pretend.call(RateLimit("100 per hour"), IRateLimiter, name="accounts.search"),
     ]
     assert config.add_request_method.calls == [
         pretend.call(accounts._user, name="user", reify=True),
+        pretend.call(accounts._oidc_publisher, name="oidc_publisher", reify=True),
+        pretend.call(accounts._oidc_claims, name="oidc_claims", reify=True),
+        pretend.call(
+            accounts._organization_access, name="organization_access", reify=True
+        ),
         pretend.call(accounts._unauthenticated_userid, name="_unauthenticated_userid"),
     ]
     assert config.set_security_policy.calls == [pretend.call(multi_policy_obj)]
     assert multi_policy_cls.calls == [
         pretend.call(
-            [session_policy_obj, basic_policy_obj, macaroon_policy_obj], authz_obj
+            [
+                session_policy_obj,
+                basic_policy_obj,
+                macaroon_policy_obj,
+            ]
         )
     ]
+    assert (
+        pretend.call(crontab(minute="*/20"), compute_user_metrics)
+        in config.add_periodic_task.calls
+    )

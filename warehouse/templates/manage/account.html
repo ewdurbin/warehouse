@@ -553,7 +553,7 @@
           {{ event.additional.new_primary }}
         </small>
         {% endif %}
-      {% elif event.tag == "account:email:sent" %}
+      {% elif event.tag == EventTag.Account.EmailSent %}
       <strong>{% trans %}Email sent{% endtrans %}</strong><br>
       <small>
         {% trans %}From:{% endtrans %} <span class="table__monospace">{{ event.additional.from_ }}</span><br>
@@ -571,17 +571,14 @@
       <strong>{% trans %}Password successfully changed{% endtrans %}</strong>
 
       {% elif event.tag == EventTag.Account.PendingOIDCPublisherAdded %}
-      <strong>Pending OpenID Connect publisher added</strong>
+      <strong>Pending trusted publisher added</strong>
       <small>{% trans %}Project:{% endtrans %} {{ event.additional.project }}</small>
-      <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.publisher }}</small>
-      <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.specifier }}</small>
+      {{ oidc_audit_event(event) }}
 
       {% elif event.tag == EventTag.Account.PendingOIDCPublisherRemoved %}
-      <strong>Pending OpenID Connect publisher removed</strong>
+      <strong>Pending trusted publisher removed</strong>
       <small>{% trans %}Project:{% endtrans %} {{ event.additional.project }}</small>
-      <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.publisher }}</small>
-      <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.specifier }}</small>
-
+      {{ oidc_audit_event(event) }}
       {% elif event.tag  == EventTag.Account.TwoFactorMethodAdded %}
       <strong>{% trans %}Two factor authentication added{% endtrans %}</strong><br>
       <small>
@@ -653,6 +650,23 @@
         {% trans public_url=event.additional.public_url %}Reason: Token found at <a href="{{ public_url }}">public url</a>{% endtrans %}
       </small>
 
+      {% elif event.tag == EventTag.Account.OrganizationRoleInvite %}
+      <strong>
+        {% trans href=request.route_path('organizations.profile', organization=event.additional.organization_name), organization_name=event.additional.organization_name, role_name=event.additional.role_name|lower %}Invited to join <a href="{{ href }}">{{ organization_name }}</a>{% endtrans %}
+      </strong>
+      {% elif event.tag == EventTag.Account.OrganizationRoleDeclineInvite %}
+      <strong>
+        {% trans href=request.route_path('organizations.profile', organization=event.additional.organization_name), organization_name=event.additional.organization_name, role_name=event.additional.role_name|lower %}Invitation to join <a href="{{ href }}">{{ organization_name }}</a> declined{% endtrans %}
+      </strong>
+      {% elif event.tag == EventTag.Account.OrganizationRoleRevokeInvite %}
+      <strong>
+        {% trans href=request.route_path('organizations.profile', organization=event.additional.organization_name), organization_name=event.additional.organization_name, role_name=event.additional.role_name|lower %}Invitation to join <a href="{{ href }}">{{ organization_name }}</a> revoked{% endtrans %}
+      </strong>
+      {% elif event.tag == EventTag.Account.OrganizationRoleExpireInvite %}
+      <strong>
+        {% trans href=request.route_path('organizations.profile', organization=event.additional.organization_name), organization_name=event.additional.organization_name, role_name=event.additional.role_name|lower %}Invitation to join <a href="{{ href }}">{{ organization_name }}</a> expired{% endtrans %}
+      </strong>
+
       {% else %}
       <strong>{{ event.tag }}</strong>
       {% endif %}
@@ -667,8 +681,8 @@
       <caption class="sr-only">{% trans %}Recent account activity{% endtrans %}</caption>
       <thead>
         <th scope="col">{% trans %}Event{% endtrans %}</th>
-        <th scope="col">{% trans %}Date / time{% endtrans %}</th>
-        <th scope="col">{% trans %}IP address{% endtrans %}</th>
+        <th scope="col">{% trans %}Time{% endtrans %}</th>
+        <th scope="col">{% trans %}Additional Info{% endtrans %}</th>
       </thead>
       <tbody>
         {% for event in recent_events %}
@@ -679,8 +693,10 @@
             {{ humanize(event.time, time="true") }}
           </td>
           <td>
-            <span class="table__mobile-label">{% trans %}IP address{% endtrans %}</span>
-            {{ "Redacted" if event.additional.redact_ip else event.ip_address }}
+            <span class="table__mobile-label">{% trans %}Location Info{% endtrans %}</span>
+            {{ "Redacted" if event.additional.redact_ip else event.location_info }}<br>
+            <span class="table__mobile-label">{% trans %}Device Info{% endtrans %}</span>
+            {{ event.user_agent_info }}
           </td>
         </tr>
         {% endfor %}

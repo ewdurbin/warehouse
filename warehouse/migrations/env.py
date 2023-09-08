@@ -11,7 +11,7 @@
 # limitations under the License.
 
 from alembic import context
-from sqlalchemy import create_engine, pool
+from sqlalchemy import create_engine, pool, text
 
 from warehouse import db
 
@@ -42,16 +42,13 @@ def run_migrations_online():
     In this scenario we need to create an Engine
     and associate a connection with the context.
     """
-    connectable = context.config.attributes.get("connection", None)
-
-    if connectable is None:
-        options = context.config.get_section(context.config.config_ini_section)
-        url = options.pop("url")
-        connectable = create_engine(url, poolclass=pool.NullPool)
+    options = context.config.get_section(context.config.config_ini_section)
+    url = options.pop("url")
+    connectable = create_engine(url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
-        connection.execute("SET statement_timeout = 5000")
-        connection.execute("SET lock_timeout = 4000")
+        connection.execute(text("SET statement_timeout = 5000"))
+        connection.execute(text("SET lock_timeout = 4000"))
 
         context.configure(
             connection=connection,
@@ -60,7 +57,10 @@ def run_migrations_online():
             transaction_per_migration=True,
         )
         with context.begin_transaction():
+            connection.execute(text("SELECT pg_advisory_lock(hashtext('alembic'))"))
             context.run_migrations()
+            context.get_bind().commit()
+            connection.execute(text("SELECT pg_advisory_unlock(hashtext('alembic'))"))
 
 
 if context.is_offline_mode():

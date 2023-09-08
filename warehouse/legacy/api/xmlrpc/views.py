@@ -17,14 +17,15 @@ import xmlrpc.client
 import xmlrpc.server
 
 from collections.abc import Mapping
-
-import typeguard
+from inspect import signature
 
 from packaging.utils import canonicalize_name
-from pyramid.httpexceptions import HTTPTooManyRequests
+from pydantic import StrictBool, StrictInt, StrictStr, ValidationError, validate_call
+from pyramid.httpexceptions import HTTPMethodNotAllowed, HTTPTooManyRequests
 from pyramid.view import view_config
 from pyramid_rpc.mapper import MapplyViewMapper
 from pyramid_rpc.xmlrpc import (
+    XmlRpcApplicationError,
     XmlRpcError,
     XmlRpcInvalidMethodParams,
     exception_view as _exception_view,
@@ -41,8 +42,8 @@ from warehouse.packaging.models import (
     JournalEntry,
     Project,
     Release,
+    ReleaseClassifiers,
     Role,
-    release_classifiers,
 )
 from warehouse.rate_limiting import IRateLimiter
 
@@ -213,21 +214,40 @@ class XMLRPCWrappedError(xmlrpc.client.Fault):
 class TypedMapplyViewMapper(MapplyViewMapper):
     def mapply(self, fn, args, kwargs):
         try:
-            memo = typeguard._CallMemo(fn, args=args, kwargs=kwargs)
-            typeguard.check_argument_types(memo)
-        except TypeError as exc:
-            raise XMLRPCInvalidParamTypes(exc)
+            validate_call(fn)(*args, **kwargs)
+        except ValidationError as exc:
+            raise XMLRPCInvalidParamTypes(
+                "; ".join(
+                    [
+                        (
+                            list(signature(fn).parameters.keys())[e["loc"][0]]
+                            if isinstance(e["loc"][0], int)
+                            and e["loc"][0] < len(signature(fn).parameters.keys())
+                            else str(e["loc"][0])
+                        )
+                        + ": "
+                        + e["msg"]
+                        for e in exc.errors()
+                    ]
+                )
+            )
 
         return super().mapply(fn, args, kwargs)
 
 
 @view_config(route_name="xmlrpc.pypi", context=Exception, renderer="xmlrpc")
 def exception_view(exc, request):
+    if isinstance(exc, HTTPMethodNotAllowed):
+        return XmlRpcApplicationError()
     return _exception_view(exc, request)
 
 
 @xmlrpc_method(method="search")
-def search(request, spec: Mapping[str, str | list[str]], operator: str = "and"):
+def search(
+    request,
+    spec: Mapping[StrictStr, StrictStr | list[StrictStr]],
+    operator: StrictStr = "and",
+):
     domain = request.registry.settings.get("warehouse.domain", request.domain)
     raise XMLRPCWrappedError(
         RuntimeError(
@@ -251,15 +271,16 @@ def list_packages_with_serial(request):
 
 
 @xmlrpc_method(method="package_hosting_mode")
-def package_hosting_mode(request, package_name: str):
+def package_hosting_mode(request, package_name: StrictStr):
     return "pypi-only"
 
 
 @xmlrpc_method(method="user_packages")
-def user_packages(request, username: str):
+def user_packages(request, username: StrictStr):
     roles = (
         request.db.query(Role)
-        .join(User, Project)
+        .join(User)
+        .join(Project)
         .filter(User.username == username)
         .order_by(Role.role_name.desc(), Project.name)
         .all()
@@ -268,7 +289,7 @@ def user_packages(request, username: str):
 
 
 @xmlrpc_method(method="top_packages")
-def top_packages(request, num=None):
+def top_packages(request, num: StrictInt | None = None):
     raise XMLRPCWrappedError(
         RuntimeError(
             "This API has been removed. Use BigQuery instead. "
@@ -278,7 +299,7 @@ def top_packages(request, num=None):
 
 
 @xmlrpc_cache_by_project(method="package_releases")
-def package_releases(request, package_name: str, show_hidden: bool = False):
+def package_releases(request, package_name: StrictStr, show_hidden: StrictBool = False):
     try:
         project = (
             request.db.query(Project)
@@ -312,7 +333,7 @@ def package_data(request, package_name, version):
 
 
 @xmlrpc_cache_by_project(method="release_data")
-def release_data(request, package_name: str, version: str):
+def release_data(request, package_name: StrictStr, version: StrictStr):
     try:
         release = (
             request.db.query(Release)
@@ -382,10 +403,11 @@ def package_urls(request, package_name, version):
 
 
 @xmlrpc_cache_by_project(method="release_urls")
-def release_urls(request, package_name: str, version: str):
+def release_urls(request, package_name: StrictStr, version: StrictStr):
     files = (
         request.db.query(File)
-        .join(Release, Project)
+        .join(Release)
+        .join(Project)
         .filter(
             (Project.normalized_name == func.normalize_pep426_name(package_name))
             & (Release.version == version)
@@ -402,7 +424,9 @@ def release_urls(request, package_name: str, version: str):
             "md5_digest": f.md5_digest,
             "sha256_digest": f.sha256_digest,
             "digests": {"md5": f.md5_digest, "sha256": f.sha256_digest},
-            "has_sig": f.has_signature,
+            # TODO: Remove this once we've had a long enough time with it
+            #       here to consider it no longer in use.
+            "has_sig": False,
             "upload_time": f.upload_time.isoformat() + "Z",
             "upload_time_iso_8601": f.upload_time.isoformat() + "Z",
             "comment_text": f.comment_text,
@@ -417,10 +441,11 @@ def release_urls(request, package_name: str, version: str):
 
 
 @xmlrpc_cache_by_project(method="package_roles")
-def package_roles(request, package_name: str):
+def package_roles(request, package_name: StrictStr):
     roles = (
         request.db.query(Role)
-        .join(User, Project)
+        .join(User)
+        .join(Project)
         .filter(Project.normalized_name == func.normalize_pep426_name(package_name))
         .order_by(Role.role_name.desc(), User.username)
         .all()
@@ -434,7 +459,7 @@ def changelog_last_serial(request):
 
 
 @xmlrpc_method(method="changelog_since_serial")
-def changelog_since_serial(request, serial: int):
+def changelog_since_serial(request, serial: StrictInt):
     entries = (
         request.db.query(JournalEntry)
         .filter(JournalEntry.id > serial)
@@ -455,7 +480,7 @@ def changelog_since_serial(request, serial: int):
 
 
 @xmlrpc_method(method="changelog")
-def changelog(request, since: int, with_ids: bool = False):
+def changelog(request, since: StrictInt, with_ids: StrictBool = False):
     since_dt = datetime.datetime.utcfromtimestamp(since)
     entries = (
         request.db.query(JournalEntry)
@@ -482,7 +507,7 @@ def changelog(request, since: int, with_ids: bool = False):
 
 
 @xmlrpc_method(method="browse")
-def browse(request, classifiers: list[str]):
+def browse(request, classifiers: list[StrictStr]):
     classifiers_q = (
         request.db.query(Classifier)
         .filter(Classifier.classifier.in_(classifiers))
@@ -490,8 +515,8 @@ def browse(request, classifiers: list[str]):
     )
 
     release_classifiers_q = (
-        select([release_classifiers])
-        .where(release_classifiers.c.trove_id == classifiers_q.c.id)
+        select(ReleaseClassifiers)
+        .where(ReleaseClassifiers.trove_id == classifiers_q.c.id)
         .alias("rc")
     )
 

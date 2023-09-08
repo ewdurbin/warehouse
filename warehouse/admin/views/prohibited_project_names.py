@@ -199,7 +199,7 @@ def release_prohibited_project_name(request):
         f"{project.name!r} released to {user.username!r}.", queue="success"
     )
 
-    request.db.flush()
+    request.db.flush()  # flush db now so project.normalized_name is available
 
     return HTTPSeeOther(
         request.route_path("admin.project.detail", project_name=project.normalized_name)
@@ -321,7 +321,6 @@ def bulk_add_prohibited_project_names(request):
         comment = request.POST.get("comment", "")
 
         for project_name in project_names:
-
             # Check to make sure the object doesn't already exist.
             if (
                 request.db.query(literal(True))

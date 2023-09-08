@@ -13,17 +13,18 @@
 import functools
 import logging
 
+from uuid import UUID
+
 import alembic.config
 import pyramid_retry
 import sqlalchemy
 import venusian
 import zope.sqlalchemy
 
-from sqlalchemy import event, inspect
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import event, func, inspect
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.ext.declarative import declarative_base  # type: ignore
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from warehouse.metrics import IMetricsService
 from warehouse.utils.attrs import make_repr
@@ -64,7 +65,15 @@ class DatabaseNotAvailableError(Exception):
     ...
 
 
-class ModelBase:
+# The Global metadata object.
+metadata = sqlalchemy.MetaData()
+
+
+class ModelBase(DeclarativeBase):
+    """Base class for models using declarative syntax."""
+
+    metadata = metadata
+
     def __repr__(self):
         inst = inspect(self)
         self.__repr__ = make_repr(
@@ -73,22 +82,13 @@ class ModelBase:
         return self.__repr__()
 
 
-# The Global metadata object.
-metadata = sqlalchemy.MetaData()
-
-
-# Base class for models using declarative syntax
-ModelBase = declarative_base(cls=ModelBase, metadata=metadata)  # type: ignore
-
-
 class Model(ModelBase):
-
     __abstract__ = True
 
-    id = sqlalchemy.Column(
-        UUID(as_uuid=True),
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
         primary_key=True,
-        server_default=sqlalchemy.text("gen_random_uuid()"),
+        server_default=func.gen_random_uuid(),
     )
 
 
@@ -156,7 +156,7 @@ def _create_session(request):
     # Check if we're in read-only mode
     from warehouse.admin.flags import AdminFlag, AdminFlagValue
 
-    flag = session.query(AdminFlag).get(AdminFlagValue.READ_ONLY.value)
+    flag = session.get(AdminFlag, AdminFlagValue.READ_ONLY.value)
     if flag and flag.enabled:
         request.tm.doom()
 

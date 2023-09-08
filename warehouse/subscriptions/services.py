@@ -78,6 +78,13 @@ class GenericBillingService:
             description=description,
         )
 
+    def update_customer(self, customer_id, name, description):
+        return self.api.Customer.modify(
+            customer_id,
+            name=name,
+            description=description,
+        )
+
     def create_checkout_session(self, customer_id, price_ids, success_url, cancel_url):
         """
         # Create new Checkout Session for the order
@@ -372,7 +379,7 @@ class StripeSubscriptionService:
         """
         Get a subscription by id
         """
-        return self.db.query(StripeSubscription).get(id)
+        return self.db.get(StripeSubscription, id)
 
     def find_subscriptionid(self, subscription_id):
         """
@@ -433,7 +440,7 @@ class StripeSubscriptionService:
 
         self.db.add(subscription)
         self.db.add(organization_subscription)
-        self.db.flush()  # get back the subscription id
+        self.db.flush()  # flush db now so we have acccess to subscription.id
 
         # Create new subscription item.
         subscription_item = StripeSubscriptionItem(
@@ -444,7 +451,6 @@ class StripeSubscriptionService:
         )
 
         self.db.add(subscription_item)
-        self.db.flush()
 
         return subscription
 
@@ -473,7 +479,6 @@ class StripeSubscriptionService:
         ).delete()
 
         self.db.delete(subscription)
-        self.db.flush()
 
     def get_subscriptions_by_customer(self, customer_id):
         """
@@ -490,7 +495,7 @@ class StripeSubscriptionService:
         """
         Get a stripe customer by id
         """
-        return self.db.query(StripeCustomer).get(stripe_customer_id)
+        return self.db.get(StripeCustomer, stripe_customer_id)
 
     def find_stripe_customer_id(self, customer_id):
         """
@@ -538,7 +543,7 @@ class StripeSubscriptionService:
         )
 
         self.db.add(stripe_customer)
-        self.db.flush()
+        self.db.flush()  # flush db now so we have access to stripe_customer.id
 
         return stripe_customer
 
@@ -555,7 +560,7 @@ class StripeSubscriptionService:
         """
         Get a product by subscription product id
         """
-        return self.db.query(StripeSubscriptionProduct).get(subscription_product_id)
+        return self.db.get(StripeSubscriptionProduct, subscription_product_id)
 
     def get_subscription_products(self):
         """
@@ -600,7 +605,7 @@ class StripeSubscriptionService:
         )
 
         self.db.add(subscription_product)
-        self.db.flush()
+        self.db.flush()  # flush db now so we have access to subscription_product.id
 
         return subscription_product
 
@@ -622,7 +627,6 @@ class StripeSubscriptionService:
         subscription_product = self.get_subscription_product(subscription_product_id)
 
         self.db.delete(subscription_product)
-        self.db.flush()
 
     def get_or_create_default_subscription_price(self):
         """
@@ -657,7 +661,7 @@ class StripeSubscriptionService:
         """
         Get a subscription price by id
         """
-        return self.db.query(StripeSubscriptionPrice).get(subscription_price_id)
+        return self.db.get(StripeSubscriptionPrice, subscription_price_id)
 
     def get_subscription_prices(self):
         """
@@ -709,7 +713,7 @@ class StripeSubscriptionService:
         )
 
         self.db.add(subscription_price)
-        self.db.flush()
+        self.db.flush()  # flush db now so we have access to subscription_price.id
 
         return subscription_price
 
@@ -731,7 +735,6 @@ class StripeSubscriptionService:
         subscription_price = self.get_subscription_price(subscription_price_id)
 
         self.db.delete(subscription_price)
-        self.db.flush()
 
 
 def subscription_factory(context, request):

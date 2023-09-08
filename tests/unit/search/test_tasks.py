@@ -35,10 +35,10 @@ from ...common.db.packaging import FileFactory, ProjectFactory, ReleaseFactory
 
 
 def test_project_docs(db_session):
-    projects = [ProjectFactory.create() for _ in range(2)]
+    projects = ProjectFactory.create_batch(2)
     releases = {
         p: sorted(
-            [ReleaseFactory.create(project=p) for _ in range(3)],
+            ReleaseFactory.create_batch(3, project=p),
             key=lambda r: packaging.version.parse(r.version),
             reverse=True,
         )
@@ -62,7 +62,6 @@ def test_project_docs(db_session):
                 "created": p.created,
                 "name": p.name,
                 "normalized_name": p.normalized_name,
-                "version": [r.version for r in prs],
                 "latest_version": first(prs, key=lambda r: not r.is_prerelease).version,
                 "description": first(
                     prs, key=lambda r: not r.is_prerelease
@@ -74,10 +73,10 @@ def test_project_docs(db_session):
 
 
 def test_single_project_doc(db_session):
-    projects = [ProjectFactory.create() for _ in range(2)]
+    projects = ProjectFactory.create_batch(2)
     releases = {
         p: sorted(
-            [ReleaseFactory.create(project=p) for _ in range(3)],
+            ReleaseFactory.create_batch(3, project=p),
             key=lambda r: packaging.version.parse(r.version),
             reverse=True,
         )
@@ -101,7 +100,6 @@ def test_single_project_doc(db_session):
                 "created": p.created,
                 "name": p.name,
                 "normalized_name": p.normalized_name,
-                "version": [r.version for r in prs],
                 "latest_version": first(prs, key=lambda r: not r.is_prerelease).version,
                 "description": first(
                     prs, key=lambda r: not r.is_prerelease
@@ -114,10 +112,10 @@ def test_single_project_doc(db_session):
 
 
 def test_project_docs_empty(db_session):
-    projects = [ProjectFactory.create() for _ in range(2)]
+    projects = ProjectFactory.create_batch(2)
     releases = {
         p: sorted(
-            [ReleaseFactory.create(project=p) for _ in range(3)],
+            ReleaseFactory.create_batch(3, project=p),
             key=lambda r: packaging.version.parse(r.version),
             reverse=True,
         )
@@ -141,7 +139,6 @@ def test_project_docs_empty(db_session):
                 "created": p.created,
                 "name": p.name,
                 "normalized_name": p.normalized_name,
-                "version": [r.version for r in prs],
                 "latest_version": first(prs, key=lambda r: not r.is_prerelease).version,
                 "description": first(
                     prs, key=lambda r: not r.is_prerelease
@@ -288,7 +285,6 @@ class TestReindex:
         assert task.retry.calls == [pretend.call(countdown=60, exc=le)]
 
     def test_successfully_indexes_and_adds_new(self, db_request, monkeypatch):
-
         docs = pretend.stub()
 
         def project_docs(db):

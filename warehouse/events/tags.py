@@ -76,6 +76,7 @@ class EventTag:
         OrganizationRoleAdd = "account:organization_role:add"
         OrganizationRoleChange = "account:organization_role:change"
         OrganizationRoleDeclineInvite = "account:organization_role:decline_invite"
+        OrganizationRoleExpireInvite = "account:organization_role:expire_invite"
         OrganizationRoleInvite = "account:organization_role:invite"
         OrganizationRoleRemove = "account:organization_role:remove"
         OrganizationRoleRevokeInvite = "account:organization_role:revoke_invite"
@@ -97,10 +98,11 @@ class EventTag:
         RoleRevokeInvite = "account:role:revoke_invite"
         TeamRoleAdd = "account:team_role:add"
         TeamRoleRemove = "account:team_role:remove"
+        TwoFactorDeviceRemembered = "account:two_factor:device_remembered"
         TwoFactorMethodAdded = "account:two_factor:method_added"
         TwoFactorMethodRemoved = "account:two_factor:method_removed"
+        EmailSent = "account:email:sent"
         # The following tags are no longer used when recording events.
-        # EmailSent = "account:email:sent"
         # ReauthenticateFailure = "account:reauthenticate:failure"
         # RoleAccepted = "account:role:accepted"
 
@@ -122,7 +124,6 @@ class EventTag:
         OwnersRequire2FAEnabled = "project:owners_require_2fa:enabled"
         ProjectCreate = "project:create"
         ReleaseAdd = "project:release:add"
-        ReleaseFileRemove = "project:release:file:remove"
         ReleaseRemove = "project:release:remove"
         ReleaseUnyank = "project:release:unyank"
         ReleaseYank = "project:release:yank"
@@ -138,6 +139,17 @@ class EventTag:
         # The following tags are no longer used when recording events.
         # RoleAccepted = "project:role:accepted"
         # RoleDelete = "project:role:delete"
+        # ReleaseFileAdd = "project:release:file:add"
+        # ReleaseFileRemove = "project:release:file:remove"
+
+    class File(EventTagEnum):
+        """Tags for File events.
+
+        Keep in sync with: warehouse/templates/manage/project/history.html
+        """
+
+        FileAdd = "file:add"
+        FileRemove = "file:remove"
 
     class Organization(EventTagEnum):
         """Tags for Organization events.
@@ -148,6 +160,7 @@ class EventTag:
         # Name = "source_type:subject_type:action"
         CatalogEntryAdd = "organization:catalog_entry:add"
         OrganizationApprove = "organization:approve"
+        OrganizationApplicationSubmit = "organization:application_submit"
         OrganizationCreate = "organization:create"
         OrganizationDecline = "organization:decline"
         OrganizationDelete = "organization:delete"
@@ -157,6 +170,7 @@ class EventTag:
         OrganizationRoleAdd = "organization:organization_role:add"
         OrganizationRoleChange = "organization:organization_role:change"
         OrganizationRoleDeclineInvite = "organization:organization_role:decline_invite"
+        OrganizationRoleExpireInvite = "organization:organization_role:expire_invite"
         OrganizationRoleInvite = "organization:organization_role:invite"
         OrganizationRoleRemove = "organization:organization_role:remove"
         OrganizationRoleRevokeInvite = "organization:organization_role:revoke_invite"

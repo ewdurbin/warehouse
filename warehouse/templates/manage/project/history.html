@@ -41,27 +41,23 @@
     </strong>
     <small>
       {% trans %}Added by:{% endtrans %}
-      {% if event.additional.ephemeral %}
+      {% if event.additional.publisher_url %}
       <a href="{{ request.route_path('manage.project.settings.publishing', project_name=project.name) }}">{{ event.additional.submitted_by }}</a>
       {% else %}
       <a href="{{ request.route_path('accounts.profile', username=event.additional.submitted_by) }}">{{ event.additional.submitted_by }}</a>
       {% endif %}
+    </small>
+    <small>
+    {% if event.additional.publisher_url %}
+      {% trans %}URL:{% endtrans %}
+      <a href="{{ event.additional.publisher_url }}">{{ event.additional.publisher_url }}</a>
+    {% endif %}
     </small>
     {% elif event.tag == EventTag.Project.ReleaseRemove %}
     <strong>
       {# No link to removed release #}
       {% trans version=event.additional.canonical_version %}Version {{ version }} removed{% endtrans %}
     </strong>
-    <small>
-      {% trans %}Removed by:{% endtrans %} <a href="{{ request.route_path('accounts.profile', username=event.additional.submitted_by) }}">{{ event.additional.submitted_by }}</a>
-    </small>
-    {% elif event.tag == EventTag.Project.ReleaseFileRemove %}
-    <strong>
-      {% trans href=request.route_path('manage.project.release', project_name=project.name, version=event.additional.canonical_version), version=event.additional.canonical_version %}File removed from <a href="{{ href }}">version {{ version }}</a>{% endtrans %}
-    </strong>
-    <small>
-      {% trans %}Filename:{% endtrans %} <code>{{ event.additional.filename }}</code>
-    </small>
     <small>
       {% trans %}Removed by:{% endtrans %} <a href="{{ request.route_path('accounts.profile', username=event.additional.submitted_by) }}">{{ event.additional.submitted_by }}</a>
     </small>
@@ -78,6 +74,58 @@
     </strong>
     <small>
       {% trans %}Yanked by:{% endtrans %} <a href="{{ request.route_path('accounts.profile', username=event.additional.submitted_by) }}">{{ event.additional.submitted_by }}</a>
+    </small>
+
+    {# Display file events #}
+    {% elif event.tag == EventTag.File.FileAdd %}
+    <strong>
+      {% trans
+        href=request.route_path(
+          'manage.project.release',
+          project_name=project.name,
+          version=event.additional.canonical_version
+        ),
+        version=event.additional.canonical_version
+      %}
+        File added to <a href="{{ href }}">version {{ version }}</a>
+      {% endtrans %}
+    </strong>
+    <small>
+      {% trans %}Filename:{% endtrans %} <code>{{ event.additional.filename }}</code>
+    </small>
+    <small>
+      {% trans %}Added by:{% endtrans %}
+      {% if event.additional.publisher_url %}
+      <a href="{{ request.route_path('manage.project.settings.publishing', project_name=project.name) }}">{{ event.additional.submitted_by }}</a>
+      {% else %}
+      <a href="{{ request.route_path('accounts.profile', username=event.additional.submitted_by) }}">{{ event.additional.submitted_by }}</a>
+      {% endif %}
+    </small>
+    <small>
+    {% if event.additional.publisher_url %}
+      {% trans %}URL:{% endtrans %}
+      <a href="{{ event.additional.publisher_url }}">{{ event.additional.publisher_url }}</a>
+    {% endif %}
+    </small>
+    {# NOTE: "project:release:file:remove" is deprecated #}
+    {% elif event.tag == EventTag.File.FileRemove or event.tag == "project:release:file:remove" %}
+    <strong>
+      {% trans
+         href=request.route_path(
+           'manage.project.release',
+           project_name=project.name,
+           version=event.additional.canonical_version
+         ),
+         version=event.additional.canonical_version
+      %}
+        File removed from <a href="{{ href }}">version {{ version }}</a>
+      {% endtrans %}
+    </strong>
+    <small>
+      {% trans %}Filename:{% endtrans %} <code>{{ event.additional.filename }}</code>
+    </small>
+    <small>
+      {% trans %}Removed by:{% endtrans %} <a href="{{ request.route_path('accounts.profile', username=event.additional.submitted_by) }}">{{ event.additional.submitted_by }}</a>
     </small>
 
     {# Display role events #}
@@ -186,11 +234,18 @@
     </small>
     {% endif %}
     <small>
-      {% trans %}Creator: {% endtrans %}
+      {% trans %}Creator{% endtrans %}:
+      {% if event.additional.publisher_url %}
       {{ event.additional.publisher_name }}:
       <a href="{{ event.additional.publisher_url }}">
         {{ event.additional.publisher_url }}
       </a>
+      {% else %}
+      {{ event.additional.publisher_name }}
+      {% endif %}
+      {% if event.additional.workflow %}
+      <small>{% trans %}Workflow:{% endtrans %} {{ event.additional.workflow }}</small>
+      {% endif %}
     </small>
     {% elif event.tag == EventTag.Project.APITokenAdded %}
     <strong>{% trans %}API token created{% endtrans %}</strong>
@@ -219,13 +274,11 @@
 
     {# Display OIDC publisher events #}
     {% elif event.tag == EventTag.Project.OIDCPublisherAdded %}
-    <strong>{% trans %}OpenID Connect publisher added{% endtrans %}</strong>
-    <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.publisher }}</small>
-    <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.specifier }}</small>
+    <strong>{% trans %}Trusted publisher added{% endtrans %}</strong>
+    {{ oidc_audit_event(event) }}
     {% elif event.tag == EventTag.Project.OIDCPublisherRemoved %}
-    <strong>{% trans %}OpenID Connect publisher removed{% endtrans %}</strong>
-    <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.publisher }}</small>
-    <small>{% trans %}Publisher:{% endtrans %} {{ event.additional.specifier }}</small>
+    <strong>{% trans %}Trusted publisher removed{% endtrans %}</strong>
+    {{ oidc_audit_event(event) }}
 
     {# Display 2FA events #}
     {% elif event.tag == EventTag.Project.OwnersRequire2FAEnabled %}
@@ -250,7 +303,7 @@
       <tr>
         <th scope="col">{% trans %}Event{% endtrans %}</th>
         <th scope="col">{% trans %}Time{% endtrans %}</th>
-        <th scope="col">{% trans %}IP address{% endtrans %}</th>
+        <th scope="col">{% trans %}Additional info{% endtrans %}</th>
       </tr>
     </thead>
     <tbody>
@@ -262,8 +315,10 @@
           {{ humanize(event.time, time="true") }}
         </td>
         <td>
-          <span class="table__mobile-label">{% trans %}IP address{% endtrans %}</span>
-          {{ event.ip_address }}
+          <span class="table__mobile-label">{% trans %}Location info{% endtrans %}</span>
+          {{ "Redacted" if event.additional.redact_ip else event.location_info }}<br>
+          <span class="table__mobile-label">{% trans %}Device Info{% endtrans %}</span>
+          {{ event.user_agent_info }}
         </td>
       </tr>
       {% endfor %}

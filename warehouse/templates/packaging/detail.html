@@ -53,7 +53,7 @@
   {% set icon = "fas fa-cube" %}
 {% elif parsed.netloc == "python.org" or parsed.netloc.endswith(".python.org") %}
   {% set icon = "fab fa-python" %}
-{% elif parsed.netloc == "youtube.com" or parsed.netloc.endswith(".youtube.com") %}
+{% elif parsed.netloc in ["youtube.com", "youtu.be"] or parsed.netloc.endswith((".youtube.com", ".youtu.be")) %}
   {% set icon = "fab fa-youtube" %}
 {% elif name|lower == "mastodon" %}
   {% set icon = "fab fa-mastodon" %}
@@ -137,8 +137,6 @@
 {% endblock %}
 
 {% block content %}
-{% csi request.route_path("includes.administer-project-include", project_name=project.normalized_name) %}
-{% endcsi %}
 {% if release.github_repo_info_url and release.github_open_issue_info_url %}
 <div class="hidden"
   data-controller="github-repo-stats"
@@ -156,13 +154,15 @@
       </h1>
 
       {% if files %}
-      <p class="package-header__pip-instructions">
-        <span id="pip-command">{{ pip_command(release, request.matched_route.name, testPyPI) }}</span>
-        <button type="button" class="copy-tooltip copy-tooltip-s" data-clipboard-target="#pip-command" data-tooltip-label="{% trans %}Copy to clipboard{% endtrans %}">
-          <i class="fa fa-copy" aria-hidden="true"></i>
-          <span class="sr-only">{% trans %}Copy PIP instructions{% endtrans %}</span>
-        </button>
-      </p>
+      <div data-controller="clipboard">
+        <p class="package-header__pip-instructions">
+          <span id="pip-command" data-clipboard-target="source">{{ pip_command(release, request.matched_route.name, testPyPI) }}</span>
+          <button type="button" class="copy-tooltip copy-tooltip-s" data-action="clipboard#copy" data-clipboard-target="tooltip" data-clipboard-tooltip-value="{% trans %}Copy to clipboard{% endtrans %}">
+            <i class="fa fa-copy" aria-hidden="true"></i>
+            <span class="sr-only">{% trans %}Copy PIP instructions{% endtrans %}</span>
+          </button>
+        </p>
+      </div>
       {% endif %}
     </div>
 
@@ -197,6 +197,8 @@
 
 <div class="horizontal-section horizontal-section--grey horizontal-section--thin">
   <div class="site-container">
+{% csi request.route_path("includes.administer-project-include", project_name=project.normalized_name) %}
+{% endcsi %}
     <div class="split-layout split-layout--middle package-description">
     {% if release.summary %}
       <p class="package-description__summary">{{ release.summary }}</p>
@@ -241,6 +243,7 @@
           </nav>
         </div>
         {% include "warehouse:templates/includes/packaging/project-data.html" %}
+        {% set include_sponsor_logos = project.organization.orgtype != OrganizationType.Company %}
         {% include "warehouse:templates/includes/sidebar-sponsor-logo.html" %}
 
       </div>

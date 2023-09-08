@@ -10,63 +10,108 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
+
 import pretend
+import pytest
 
-from sqlalchemy.sql.expression import func, literal
+from pyramid.authorization import Authenticated
 
-from warehouse.oidc import utils
-from warehouse.oidc.models import GitHubPublisher
+from tests.common.db.oidc import GitHubPublisherFactory, GooglePublisherFactory
+from warehouse.oidc import errors, utils
+from warehouse.utils.security_policy import principals_for
 
 
 def test_find_publisher_by_issuer_bad_issuer_url():
-    assert (
+    with pytest.raises(errors.InvalidPublisherError):
         utils.find_publisher_by_issuer(
             pretend.stub(), "https://fake-issuer.url", pretend.stub()
         )
-        is None
-    )
 
 
-def test_find_publisher_by_issuer_github():
-    publisher = pretend.stub()
-    one_or_none = pretend.call_recorder(lambda: publisher)
-    filter_ = pretend.call_recorder(lambda *a: pretend.stub(one_or_none=one_or_none))
-    filter_by = pretend.call_recorder(lambda **kw: pretend.stub(filter=filter_))
-    session = pretend.stub(
-        query=pretend.call_recorder(lambda cls: pretend.stub(filter_by=filter_by))
+@pytest.mark.parametrize(
+    "environment, expected_id",
+    [
+        (None, uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+        ("some_other_environment", uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+        ("some_environment", uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")),
+        ("sOmE_eNvIrOnMeNt", uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")),
+    ],
+)
+def test_find_publisher_by_issuer_github(db_request, environment, expected_id):
+    GitHubPublisherFactory(
+        id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        repository_owner="foo",
+        repository_name="bar",
+        repository_owner_id="1234",
+        workflow_filename="ci.yml",
+        environment="",  # No environment
     )
+    GitHubPublisherFactory(
+        id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        repository_owner="foo",
+        repository_name="bar",
+        repository_owner_id="1234",
+        workflow_filename="ci.yml",
+        environment="some_environment",  # Environment set
+    )
+
     signed_claims = {
         "repository": "foo/bar",
         "job_workflow_ref": "foo/bar/.github/workflows/ci.yml@refs/heads/main",
         "repository_owner_id": "1234",
     }
+    if environment:
+        signed_claims["environment"] = environment
 
     assert (
         utils.find_publisher_by_issuer(
-            session, "https://token.actions.githubusercontent.com", signed_claims
-        )
-        == publisher
+            db_request.db,
+            utils.GITHUB_OIDC_ISSUER_URL,
+            signed_claims,
+        ).id
+        == expected_id
     )
 
-    assert session.query.calls == [pretend.call(GitHubPublisher)]
-    assert filter_by.calls == [
-        pretend.call(
-            repository_name="bar", repository_owner="foo", repository_owner_id="1234"
-        )
-    ]
 
-    # SQLAlchemy BinaryExpression objects don't support comparison with __eq__,
-    # so we need to dig into the callset and compare the argument manually.
-    assert len(filter_.calls) == 1
-    assert len(filter_.calls[0].args) == 1
+@pytest.mark.parametrize(
+    "sub, expected_id",
+    [
+        ("some-other-subject", uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+        ("some-subject", uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")),
+    ],
+)
+def test_find_publisher_by_issuer_google(db_request, sub, expected_id):
+    GooglePublisherFactory(
+        id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        email="fake@example.com",
+        sub=None,  # No subject
+    )
+    GooglePublisherFactory(
+        id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        email="fake@example.com",
+        sub="some-subject",  # Subject set
+    )
+
+    signed_claims = {
+        "email": "fake@example.com",
+        "sub": sub,
+    }
+
     assert (
-        filter_.calls[0]
-        .args[0]
-        .compare(
-            literal("ci.yml@refs/heads/main").like(
-                func.concat(GitHubPublisher.workflow_filename, "%")
-            )
-        )
+        utils.find_publisher_by_issuer(
+            db_request.db,
+            utils.GOOGLE_OIDC_ISSUER_URL,
+            signed_claims,
+        ).id
+        == expected_id
     )
 
-    assert one_or_none.calls == [pretend.call()]
+
+def test_oidc_context_principals():
+    assert principals_for(
+        utils.OIDCContext(publisher=pretend.stub(id=17), claims=None)
+    ) == [
+        Authenticated,
+        "oidc:17",
+    ]

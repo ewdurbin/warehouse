@@ -22,8 +22,7 @@
   <section id="two-factor">
     <h2 class="sub-title">{% trans %}Two factor authentication (2FA){% endtrans %}</h2>
     <p>
-      {% trans href='/help#twofa' %}Two factor authentication adds an additional layer of security to your account. <a href="{{ href }}">Learn more about <abbr title="two factor authentication">2FA</abbr></a>.{% endtrans %}</p>
-
+      {% trans href='/help#twofa' %}Two factor authentication adds an additional layer of security to your account. <a href="{{ href }}">Learn more about <abbr title="two factor authentication">2FA</abbr></a>. Once 2FA is enabled, it cannot be disabled.{% endtrans %}</p>
 
     {% if user.has_recovery_codes %}
     <table class="table table--2fa">
@@ -57,15 +56,33 @@
         </tr>
       </thead>
       <tbody>
+        {% if user.has_single_2fa %}
+        <tr>
+          <td colspan="2" class="table__no-bottom-border">
+            <div class="callout-block callout-block--warning no-top-margin no-bottom-margin">
+              {% trans %}To remove this 2FA method, you must first add another method.{% endtrans %}
+            </div>
+          </td>
+        </tr>
+        {% endif %}
         {% if user.totp_secret %}
         <tr>
           <th scope="row">{% trans %}Authentication application (<abbr title="time-based one-time password">TOTP</abbr>){% endtrans %}</th>
           <td class="table__align-right">
+            {% if user.totp_secret %}
+            <a href="{{ request.route_path('manage.account.totp-provision') }}" class="button button--primary">Edit</a>
+            {% endif %}
+            {% if user.has_single_2fa %}
+            <button class="button" disabled title="{% trans %}Cannot remove last 2FA method{% endtrans %}" >
+            {% trans %}Remove{% endtrans %}
+            </button>
+            {% else %}
             <a href="#disable-totp" class="button button--secondary">{% trans %}Remove{% endtrans %}</a>
             {% set title=gettext("Remove authentication application") %}
             {% set confirm_button_label=gettext("Remove application") %}
             {% set action=request.route_path('manage.account.totp-provision') %}
             {{ confirm_password_modal(title=title, action=action, slug="disable-totp", warning=False, confirm_button_label=confirm_button_label) }}
+            {% endif %}
           </td>
         </tr>
         {% endif %}
@@ -75,15 +92,21 @@
             <strong>"{{ credential.label }}"</strong> - {% trans %}Security device (<abbr title="web authentication">WebAuthn</abbr>){% endtrans %}
           </th>
           <td class="table__align-right">
+            {% if user.has_single_2fa %}
+            <button class="button" disabled title="{% trans %}Cannot remove last 2FA method{% endtrans %}" >
+            {% trans %}Remove{% endtrans %}
+            </button>
+            {% else %}
             <a href="#disable-webauthn-{{ credential.id }}" class="button button--secondary">{% trans %}Remove{% endtrans %}</a>
             {% set title=gettext("Remove two factor security device") + " - " + credential.label %}
             {% set confirm_button_label=gettext("Remove device") %}
             {% set action=request.route_path('manage.account.webauthn-provision.delete') %}
             {% set slug="disable-webauthn-" + credential.id | string %}
             {% set extra_fields %}
-              <input type="hidden" name="label" value="{{ credential.label }}" autocomplete="off">
+            <input type="hidden" name="label" value="{{ credential.label }}" autocomplete="off">
             {% endset %}
             {{ confirm_modal(title=title, label=gettext("Device name"), confirm_name="device_name", confirm_string=credential.label, confirm_button_label=confirm_button_label, slug=slug, extra_fields=extra_fields, action=action, warning=False, confirm_string_in_title=False) }}
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -164,7 +187,7 @@
       </div>
     {% endif %}
     <div class="wrap-children">
-      <a href="{{ request.route_path('manage.account.totp-provision') }}" class="button button--primary {{ "button--disabled" if disabled else "" }}">
+      <a href="{{ request.route_path('manage.account.totp-provision') }}" class="button button--primary {{ "button--disabled" if disabled or user.totp_secret else "" }}" title="{{ "Only one authentication application (TOTP) can be used at a time" if user.totp_secret else ""}} ">
         {% trans %}
         Add <abbr title="two factor authentication">2FA</abbr> with authentication application
         {% endtrans %}
@@ -216,7 +239,7 @@
                   {% trans %}Your projects{% endtrans %}
                 </a>
               </li>
-              {% if not request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS) %}
+              {% if request.organization_access %}
               <li>
                 <a href="{{ request.route_path('manage.organizations') }}" class="vertical-tabs__tab vertical-tabs__tab--with-icon {% if active_tab == 'organizations' %}vertical-tabs__tab--is-active{% endif %}" {% if active_tab == 'organizations' %}aria-selected="true"{% endif %}>
                   <i class="fa fa-sitemap" aria-hidden="true"></i>
@@ -230,14 +253,12 @@
                   {% trans %}Account settings{% endtrans %}
                 </a>
               </li>
-              {% if request.registry.settings["warehouse.oidc.enabled"] %}
               <li>
-                <a href="{{ request.route_path('manage.account.publishing') }}" class="vertical-tabs__tab vertical-tabs__tab--with-icon {% if active_tab == 'publishing' %}vertical-tabs__tab--is-active{% endif %} {% if mode == 'mobile' %}vertical-tabs__tab--mobile{% endif %}" {% if active_tab == 'publishing' %}aria-selected="true"{% endif %}>
+                <a href="{{ request.route_path('manage.account.publishing') }}" class="vertical-tabs__tab vertical-tabs__tab--with-icon {% if active_tab == 'publishing' %}vertical-tabs__tab--is-active{% endif %}" {% if active_tab == 'publishing' %}aria-selected="true"{% endif %}>
                   <i class="fa fa-upload" aria-hidden="true"></i>
                   {% trans %}Publishing{% endtrans %}
                 </a>
               </li>
-              {% endif %}
             </ul>
           </nav>
         </div>
@@ -252,7 +273,7 @@
                 {% trans %}Your projects{% endtrans %}
               </a>
             </li>
-            {% if not request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS) %}
+            {% if request.organization_access %}
             <li>
               <a href="{{ request.route_path('manage.organizations') }}" class="vertical-tabs__tab vertical-tabs__tab--mobile vertical-tabs__tab--with-icon vertical-tabs__tab--no-top-border {% if active_tab == 'organizations' %}vertical-tabs__tab--is-active{% endif %}" {% if active_tab == 'organizations' %}aria-selected="true"{% endif %}>
                 <i class="fa fa-sitemap" aria-hidden="true"></i>
@@ -261,9 +282,15 @@
             </li>
             {% endif %}
             <li>
-              <a href="{{ request.route_path('manage.account') }}" class="vertical-tabs__tab vertical-tabs__tab--mobile vertical-tabs__tab--with-icon {% if active_tab == 'account' %}vertical-tabs__tab--is-active{% endif %}" {% if active_tab == 'account' %}aria-selected="true"{% endif %}>
+              <a href="{{ request.route_path('manage.account') }}" class="vertical-tabs__tab vertical-tabs__tab--mobile vertical-tabs__tab--with-icon vertical-tabs__tab--no-top-border {% if active_tab == 'account' %}vertical-tabs__tab--is-active{% endif %}" {% if active_tab == 'account' %}aria-selected="true"{% endif %}>
                 <i class="fa fa-cog" aria-hidden="true"></i>
                 {% trans %}Account settings{% endtrans %}
+              </a>
+            </li>
+            <li>
+              <a href="{{ request.route_path('manage.account.publishing') }}" class="vertical-tabs__tab vertical-tabs__tab--mobile vertical-tabs__tab--with-icon vertical-tabs__tab--no-top-border {% if active_tab == 'publishing' %}vertical-tabs__tab--is-active{% endif %}" {% if active_tab == 'publishing' %}aria-selected="true"{% endif %}>
+                <i class="fa fa-upload" aria-hidden="true"></i>
+                {% trans %}Publishing{% endtrans %}
               </a>
             </li>
           </ul>
@@ -408,10 +435,11 @@
   warning=True,
   confirm_string_in_title=True,
   modifier="--danger",
-  tooltip=None)
+  tooltip=None,
+  additional_attributes=None)
 %}
   {% set slug = confirm_name.lower().replace(' ', '-') + '-modal' %}
-  <a href="#{{ slug }}" class="button button{{ modifier }}" {% if tooltip != None %}title="{{ tooltip }}"{% endif %}>
+  <a href="#{{ slug }}" class="button button{{ modifier }}" {% if tooltip != None %}title="{{ tooltip }}"{% endif %} {{ additional_attributes or '' }}>
     {{ confirm_button_label if confirm_button_label else title }}
   </a>
   {{ confirm_modal(title, label, confirm_name, confirm_string, slug, confirm_button_label=confirm_button_label, extra_fields=extra_fields, extra_description=extra_description, action=action, warning=warning, confirm_string_in_title=confirm_string_in_title, modifier=modifier) }}
@@ -457,14 +485,14 @@
 {% endmacro %}
 
 {% macro oidc_title() %}
-  {% trans %}OpenID Connect Publisher Management{% endtrans %}
+  {% trans %}Trusted Publisher Management{% endtrans %}
 {% endmacro %}
 
 {% macro oidc_desc() %}
   <p>
     {% trans %}
       OpenID Connect (OIDC) provides a flexible, credential-free mechanism for delegating
-      publishing authority for a PyPI package to a third party service,
+      publishing authority for a PyPI package to a trusted third party service,
       like GitHub Actions.
     {% endtrans %}
   </p>
@@ -477,8 +505,8 @@
   </p>
 
   <p class="no-bottom-padding">
-    {% trans href="/help#openid-connect" %}
-    You can read more about OpenID Connect and how to use it
+    {% trans href="https://docs.pypi.org/trusted-publishers/" %}
+    You can read more about trusted publishers and how to use them
     <a href="{{ href }}">here</a>.
     {% endtrans %}
   </p>
@@ -507,10 +535,46 @@
     {{ publisher.publisher_name }}
   </td>
   <td scope="row">
-    <a href="{{ publisher.publisher_url }}">{{ publisher.publisher_url }}</a>
+    <a href="{{ publisher.publisher_url() }}">{{ publisher.repository }}</a>
+  </td>
+  <td scope="row">
+    {{ publisher.workflow_filename }}
+  </td>
+  <td scope="row">
+    {% if publisher.environment %}
+      {{ publisher.environment }}
+    {% else %}
+      <i>({% trans %}Any{% endtrans %})</i>
+    {% endif %}
   </td>
   <td scope="row">
     <input form="delete-publisher-{{ publisher.id }}" type="submit" value="{% trans %}Remove{% endtrans %}" class="button button--danger">
   </td>
 </tr>
+{%- endmacro %}
+
+{% macro oidc_audit_event(event) -%}
+{% if event.tag == EventTag.Project.OIDCPublisherAdded or event.tag == EventTag.Account.PendingOIDCPublisherAdded %}
+{% set submit_desc = _("Added by:") %}
+{% elif event.tag == EventTag.Project.OIDCPublisherRemoved or event.tag == EventTag.Account.PendingOIDCPublisherRemoved %}
+{% set submit_desc = _("Removed by:") %}
+{% else %}
+{% set submit_desc = _("Submitted by:") %}
+{% endif %}
+{% if event.additional.publisher == "GitHub" %}
+{% set specifier_desc = _("Workflow:") %}
+{% else %}
+{% set specifier_desc = _("Specifier:") %}
+{% endif %}
+
+<small>{% trans %}Publisher:{% endtrans %} {{ event.additional.publisher }}</small>
+{% if event.additional.url %}
+<small>{% trans %}URL:{% endtrans %} {{ event.additional.url }}</small>
+{% endif %}
+<small>{{ specifier_desc }} {{ event.additional.specifier }}</small>
+{% if event.additional.submitted_by %}
+<small>
+  {{ submit_desc }} <a href="{{ request.route_path('accounts.profile', username=event.additional.submitted_by) }}">{{ event.additional.submitted_by }}</a>
+</small>
+{% endif %}
 {%- endmacro %}

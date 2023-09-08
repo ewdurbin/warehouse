@@ -29,6 +29,17 @@ from ...common.db.packaging import (
 )
 
 
+def _assert_has_cors_headers(headers):
+    assert headers["Access-Control-Allow-Origin"] == "*"
+    assert headers["Access-Control-Allow-Headers"] == (
+        "Content-Type, If-Match, If-Modified-Since, If-None-Match, "
+        "If-Unmodified-Since"
+    )
+    assert headers["Access-Control-Allow-Methods"] == "GET"
+    assert headers["Access-Control-Max-Age"] == "86400"
+    assert headers["Access-Control-Expose-Headers"] == "X-PyPI-Last-Serial"
+
+
 class TestContentNegotiation:
     @pytest.mark.parametrize("header", [None, "text/plain"])
     def test_defaults_text_html(self, header):
@@ -88,6 +99,7 @@ class TestSimpleIndex:
         }
         assert db_request.response.headers["X-PyPI-Last-Serial"] == "0"
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -106,6 +118,7 @@ class TestSimpleIndex:
         }
         assert db_request.response.headers["X-PyPI-Last-Serial"] == str(je.id)
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -116,10 +129,7 @@ class TestSimpleIndex:
     )
     def test_with_results_no_serial(self, db_request, content_type, renderer_override):
         db_request.accept = content_type
-        projects = [
-            (x.name, x.normalized_name)
-            for x in [ProjectFactory.create() for _ in range(3)]
-        ]
+        projects = [(x.name, x.normalized_name) for x in ProjectFactory.create_batch(3)]
         assert simple.simple_index(db_request) == {
             "meta": {"_last-serial": 0, "api-version": API_VERSION},
             "projects": [
@@ -129,6 +139,7 @@ class TestSimpleIndex:
         }
         assert db_request.response.headers["X-PyPI-Last-Serial"] == "0"
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -141,10 +152,7 @@ class TestSimpleIndex:
         self, db_request, content_type, renderer_override
     ):
         db_request.accept = content_type
-        projects = [
-            (x.name, x.normalized_name)
-            for x in [ProjectFactory.create() for _ in range(3)]
-        ]
+        projects = [(x.name, x.normalized_name) for x in ProjectFactory.create_batch(3)]
         user = UserFactory.create()
         je = JournalEntryFactory.create(submitted_by=user)
 
@@ -157,6 +165,7 @@ class TestSimpleIndex:
         }
         assert db_request.response.headers["X-PyPI-Last-Serial"] == str(je.id)
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -175,6 +184,7 @@ class TestSimpleDetail:
 
         assert isinstance(resp, HTTPMovedPermanently)
         assert resp.headers["Location"] == "/foobar/"
+        _assert_has_cors_headers(resp.headers)
         assert pyramid_request.current_route_path.calls == [pretend.call(name="foo")]
 
     @pytest.mark.parametrize(
@@ -197,6 +207,7 @@ class TestSimpleDetail:
 
         assert db_request.response.headers["X-PyPI-Last-Serial"] == "0"
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -221,6 +232,7 @@ class TestSimpleDetail:
 
         assert db_request.response.headers["X-PyPI-Last-Serial"] == str(je.id)
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -232,7 +244,7 @@ class TestSimpleDetail:
     def test_with_files_no_serial(self, db_request, content_type, renderer_override):
         db_request.accept = content_type
         project = ProjectFactory.create()
-        releases = [ReleaseFactory.create(project=project) for _ in range(3)]
+        releases = ReleaseFactory.create_batch(3, project=project)
         release_versions = sorted([r.version for r in releases], key=parse)
         files = [
             FileFactory.create(release=r, filename=f"{project.name}-{r.version}.tar.gz")
@@ -259,6 +271,8 @@ class TestSimpleDetail:
                     "yanked": False,
                     "size": f.size,
                     "upload-time": f.upload_time.isoformat() + "Z",
+                    "data-dist-info-metadata": False,
+                    "core-metadata": False,
                 }
                 for f in files
             ],
@@ -266,6 +280,7 @@ class TestSimpleDetail:
 
         assert db_request.response.headers["X-PyPI-Last-Serial"] == "0"
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -277,7 +292,7 @@ class TestSimpleDetail:
     def test_with_files_with_serial(self, db_request, content_type, renderer_override):
         db_request.accept = content_type
         project = ProjectFactory.create()
-        releases = [ReleaseFactory.create(project=project) for _ in range(3)]
+        releases = ReleaseFactory.create_batch(3, project=project)
         release_versions = sorted([r.version for r in releases], key=parse)
         files = [
             FileFactory.create(release=r, filename=f"{project.name}-{r.version}.tar.gz")
@@ -304,6 +319,8 @@ class TestSimpleDetail:
                     "yanked": False,
                     "size": f.size,
                     "upload-time": f.upload_time.isoformat() + "Z",
+                    "data-dist-info-metadata": False,
+                    "core-metadata": False,
                 }
                 for f in files
             ],
@@ -311,6 +328,7 @@ class TestSimpleDetail:
 
         assert db_request.response.headers["X-PyPI-Last-Serial"] == str(je.id)
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override
@@ -350,6 +368,7 @@ class TestSimpleDetail:
                 release=r,
                 filename=f"{project.name}-{r.version}.whl",
                 packagetype="bdist_wheel",
+                metadata_file_sha256_digest="deadbeefdeadbeefdeadbeefdeadbeef",
             )
             for r in releases
         ]
@@ -385,6 +404,14 @@ class TestSimpleDetail:
                     "yanked": False,
                     "size": f.size,
                     "upload-time": f.upload_time.isoformat() + "Z",
+                    "data-dist-info-metadata": {
+                        "sha256": "deadbeefdeadbeefdeadbeefdeadbeef"
+                    }
+                    if f.metadata_file_sha256_digest is not None
+                    else False,
+                    "core-metadata": {"sha256": "deadbeefdeadbeefdeadbeefdeadbeef"}
+                    if f.metadata_file_sha256_digest is not None
+                    else False,
                 }
                 for f in files
             ],
@@ -392,6 +419,7 @@ class TestSimpleDetail:
 
         assert db_request.response.headers["X-PyPI-Last-Serial"] == str(je.id)
         assert db_request.response.content_type == content_type
+        _assert_has_cors_headers(db_request.response.headers)
 
         if renderer_override is not None:
             db_request.override_renderer == renderer_override

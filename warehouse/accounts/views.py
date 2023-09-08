@@ -15,19 +15,24 @@ import hashlib
 import json
 import uuid
 
+import humanize
 import pytz
 
 from first import first
 from pyramid.httpexceptions import (
+    HTTPBadRequest,
     HTTPMovedPermanently,
     HTTPNotFound,
     HTTPSeeOther,
     HTTPTooManyRequests,
+    HTTPUnauthorized,
 )
+from pyramid.interfaces import ISecurityPolicy
 from pyramid.security import forget, remember
 from pyramid.view import view_config, view_defaults
 from sqlalchemy.exc import NoResultFound
 from webauthn.helpers import bytes_to_base64url
+from webob.multidict import MultiDict
 
 from warehouse.accounts import REDIRECT_FIELD_NAME
 from warehouse.accounts.forms import (
@@ -38,6 +43,7 @@ from warehouse.accounts.forms import (
     RequestPasswordResetForm,
     ResetPasswordForm,
     TOTPAuthenticationForm,
+    UsernameSearchForm,
     WebAuthnAuthenticationForm,
 )
 from warehouse.accounts.interfaces import (
@@ -69,7 +75,8 @@ from warehouse.email import (
 )
 from warehouse.events.tags import EventTag
 from warehouse.metrics.interfaces import IMetricsService
-from warehouse.oidc.forms import DeletePublisherForm, PendingGitHubPublisherForm
+from warehouse.oidc.forms import DeletePublisherForm
+from warehouse.oidc.forms.github import PendingGitHubPublisherForm
 from warehouse.oidc.interfaces import TooManyOIDCRegistrations
 from warehouse.oidc.models import PendingGitHubPublisher, PendingOIDCPublisher
 from warehouse.organizations.interfaces import IOrganizationService
@@ -86,13 +93,18 @@ from warehouse.rate_limiting.interfaces import IRateLimiter
 from warehouse.utils.http import is_safe_url
 
 USER_ID_INSECURE_COOKIE = "user_id__insecure"
+REMEMBER_DEVICE_COOKIE = "remember_device"
 
 
 @view_config(context=TooManyFailedLogins, has_translations=True)
 def failed_logins(exc, request):
     resp = HTTPTooManyRequests(
         request._(
-            "There have been too many unsuccessful login attempts. Try again later."
+            "There have been too many unsuccessful login attempts. "
+            "You have been locked out for {}. "
+            "Please try again later.".format(
+                humanize.naturaldelta(exc.resets_in.total_seconds())
+            )
         ),
         retry_after=exc.resets_in.total_seconds(),
     )
@@ -155,6 +167,41 @@ def profile(user, request):
 
 
 @view_config(
+    route_name="accounts.search",
+    renderer="api/account_search.html",
+    uses_session=True,
+)
+def accounts_search(request) -> dict[str, list[User]]:
+    """
+    Search for usernames based on prefix.
+    Used with autocomplete.
+    User must be logged in.
+    """
+    if request.authenticated_userid is None:
+        raise HTTPUnauthorized()
+
+    form = UsernameSearchForm(request.params)
+    if not form.validate():
+        raise HTTPBadRequest()
+
+    search_limiter = request.find_service(IRateLimiter, name="accounts.search")
+    if not search_limiter.test(request.ip_address):
+        # TODO: This should probably `raise HTTPTooManyRequests` instead,
+        #  but we need to make sure that the client library can handle it.
+        #  See: https://github.com/afcapel/stimulus-autocomplete/issues/136
+        return {"users": []}
+
+    user_service = request.find_service(IUserService, context=None)
+    users = user_service.get_users_by_prefix(form.username.data.strip())
+    search_limiter.hit(request.ip_address)
+
+    if not users:
+        raise HTTPNotFound()
+
+    return {"users": users}
+
+
+@view_config(
     route_name="accounts.login",
     renderer="accounts/login.html",
     uses_session=True,
@@ -190,8 +237,12 @@ def login(request, redirect_field_name=REDIRECT_FIELD_NAME, _form_class=LoginFor
             username = form.username.data
             userid = user_service.find_userid(username)
 
-            # If the user has enabled two factor authentication.
-            if user_service.has_two_factor(userid):
+            # If the user has enabled two-factor authentication and they do not have
+            # a valid saved device.
+            two_factor_required = user_service.has_two_factor(userid) and (
+                not _check_remember_device_token(request, userid)
+            )
+            if two_factor_required:
                 two_factor_data = {"userid": userid}
                 if redirect_to:
                     two_factor_data["redirect_to"] = redirect_to
@@ -282,13 +333,15 @@ def two_factor_and_totp_validate(request, _form_class=TOTPAuthenticationForm):
         two_factor_state["has_webauthn"] = True
     if user_service.has_recovery_codes(userid):
         two_factor_state["has_recovery_codes"] = True
+    two_factor_state["remember_device_days"] = request.registry.settings[
+        "remember_device.days"
+    ]
 
     if request.method == "POST":
         form = two_factor_state["totp_form"]
         if form.validate():
-            _login_user(
-                request, userid, two_factor_method="totp", two_factor_label="totp"
-            )
+            two_factor_method = "totp"
+            _login_user(request, userid, two_factor_method, two_factor_label="totp")
             user_service.update_user(userid, last_totp_value=form.totp_value.data)
 
             resp = HTTPSeeOther(redirect_to)
@@ -301,6 +354,9 @@ def two_factor_and_totp_validate(request, _form_class=TOTPAuthenticationForm):
 
             if not two_factor_state.get("has_recovery_codes", False):
                 send_recovery_code_reminder_email(request, request.user)
+
+            if form.remember_device.data:
+                _remember_device(request, resp, userid, two_factor_method)
 
             return resp
         else:
@@ -379,12 +435,8 @@ def webauthn_authentication_validate(request):
         )
         webauthn.sign_count = form.validated_credential.new_sign_count
 
-        _login_user(
-            request,
-            userid,
-            two_factor_method="webauthn",
-            two_factor_label=webauthn.label,
-        )
+        two_factor_method = "webauthn"
+        _login_user(request, userid, two_factor_method, two_factor_label=webauthn.label)
 
         request.response.set_cookie(
             USER_ID_INSECURE_COOKIE,
@@ -396,6 +448,9 @@ def webauthn_authentication_validate(request):
         if not request.user.has_recovery_codes:
             send_recovery_code_reminder_email(request, request.user)
 
+        if form.remember_device.data:
+            _remember_device(request, request.response, userid, two_factor_method)
+
         return {
             "success": request._("Successful WebAuthn assertion"),
             "redirect_to": redirect_to,
@@ -403,6 +458,47 @@ def webauthn_authentication_validate(request):
 
     errors = [str(error) for error in form.credential.errors]
     return {"fail": {"errors": errors}}
+
+
+def _check_remember_device_token(request, user_id) -> bool:
+    """
+    Returns true if the given remember device cookie is valid for the given user.
+    """
+    remember_device_token = request.cookies.get(REMEMBER_DEVICE_COOKIE)
+    if not remember_device_token:
+        return False
+    token_service = request.find_service(ITokenService, name="remember_device")
+    try:
+        data = token_service.loads(remember_device_token)
+        user_id_token = data.get("user_id")
+        return user_id_token == str(user_id)
+    except TokenException:
+        return False
+
+
+def _remember_device(request, response, userid, two_factor_method) -> None:
+    """
+    Generates and sets a cookie for remembering this device.
+    """
+    remember_device_data = {"user_id": str(userid)}
+    token_service = request.find_service(ITokenService, name="remember_device")
+    token = token_service.dumps(remember_device_data)
+    response.set_cookie(
+        REMEMBER_DEVICE_COOKIE,
+        token,
+        max_age=request.registry.settings["remember_device.seconds"],
+        httponly=True,
+        secure=request.scheme == "https",
+        samesite=b"strict",
+        path=request.route_path("accounts.login"),
+    )
+    request.user.record_event(
+        tag=EventTag.Account.TwoFactorDeviceRemembered,
+        request=request,
+        additional={
+            "two_factor_method": two_factor_method,
+        },
+    )
 
 
 @view_config(
@@ -445,9 +541,10 @@ def recovery_code(request, _form_class=RecoveryCodeAuthenticationForm):
                 .lower(),
             )
 
-            user_service.record_event(
-                userid,
+            user = user_service.get_user(userid)
+            user.record_event(
                 tag=EventTag.Account.RecoveryCodesUsed,
+                request=request,
             )
 
             request.session.flash(
@@ -506,6 +603,12 @@ def logout(request, redirect_field_name=REDIRECT_FIELD_NAME):
         # the session for the original user.
         request.session.invalidate()
 
+        # We've logged the user out, so we want to ensure that we invalid the cache
+        # for our security policy, if we're using one that can be reset during login
+        security_policy = request.registry.queryUtility(ISecurityPolicy)
+        if hasattr(security_policy, "reset"):
+            security_policy.reset(request)
+
         # Now that we're logged out we'll want to redirect the user to either
         # where they were originally, or to the default view.
         resp = HTTPSeeOther(redirect_to, headers=dict(headers))
@@ -547,9 +650,20 @@ def register(request, _form_class=RegistrationForm):
 
     user_service = request.find_service(IUserService, context=None)
     breach_service = request.find_service(IPasswordBreachedService, context=None)
+    recaptcha_service = request.find_service(name="recaptcha")
+    request.find_service(name="csp").merge(recaptcha_service.csp_policy)
+
+    # the form contains an auto-generated field from recaptcha with
+    # hyphens in it. make it play nice with wtforms.
+    post_body = MultiDict(
+        {key.replace("-", "_"): value for key, value in request.POST.items()}
+    )
 
     form = _form_class(
-        data=request.POST, user_service=user_service, breach_service=breach_service
+        formdata=post_body,
+        user_service=user_service,
+        recaptcha_service=recaptcha_service,
+        breach_service=breach_service,
     )
 
     if request.method == "POST" and form.validate():
@@ -558,9 +672,9 @@ def register(request, _form_class=RegistrationForm):
             form.username.data, form.full_name.data, form.new_password.data
         )
         email = user_service.add_email(user.id, form.email.data, primary=True)
-        user_service.record_event(
-            user.id,
+        user.record_event(
             tag=EventTag.Account.AccountCreate,
+            request=request,
             additional={"email": form.email.data},
         )
 
@@ -605,9 +719,9 @@ def request_password_reset(request, _form_class=RequestPasswordResetForm):
 
         if user.can_reset_password:
             send_password_reset_email(request, (user, email))
-            user_service.record_event(
-                user.id,
+            user.record_event(
                 tag=EventTag.Account.PasswordResetRequest,
+                request=request,
             )
             user_service.ratelimiters["password.reset"].hit(user.id)
 
@@ -615,9 +729,9 @@ def request_password_reset(request, _form_class=RequestPasswordResetForm):
             n_hours = token_service.max_age // 60 // 60
             return {"n_hours": n_hours}
         else:
-            user_service.record_event(
-                user.id,
+            user.record_event(
                 tag=EventTag.Account.PasswordResetAttempt,
+                request=request,
             )
             request.session.flash(
                 request._(
@@ -706,7 +820,7 @@ def reset_password(request, _form_class=ResetPasswordForm):
         )
 
     form = _form_class(
-        **request.params,
+        request.POST,
         username=user.username,
         full_name=user.name,
         email=user.email,
@@ -720,7 +834,10 @@ def reset_password(request, _form_class=ResetPasswordForm):
         )
         # Update password.
         user_service.update_user(user.id, password=form.new_password.data)
-        user_service.record_event(user.id, tag=EventTag.Account.PasswordReset)
+        user.record_event(
+            tag=EventTag.Account.PasswordReset,
+            request=request,
+        )
         password_reset_limiter.clear(user.id)
 
         # Send password change email
@@ -769,7 +886,7 @@ def verify_email(request):
     try:
         email = (
             request.db.query(Email)
-            .filter(Email.id == data["email.id"], Email.user == request.user)
+            .filter(Email.id == int(data["email.id"]), Email.user == request.user)
             .one()
         )
     except NoResultFound:
@@ -783,7 +900,7 @@ def verify_email(request):
     email.transient_bounces = 0
     email.user.record_event(
         tag=EventTag.Account.EmailVerified,
-        ip_address=request.remote_addr,
+        request=request,
         additional={"email": email.email, "primary": email.primary},
     )
 
@@ -808,7 +925,12 @@ def verify_email(request):
         ),
         queue="success",
     )
-    return HTTPSeeOther(request.route_path("manage.account"))
+
+    # If they've already set up a 2FA app, send them to their account page.
+    if request.user.has_two_factor:
+        return HTTPSeeOther(request.route_path("manage.account"))
+    # Otherwise, send them to the two-factor setup page.
+    return HTTPSeeOther(request.route_path("manage.account.two-factor"))
 
 
 def _get_two_factor_data(request, _redirect_to="/"):
@@ -891,7 +1013,7 @@ def verify_organization_role(request):
         message = request.params.get("message", "")
         organization.record_event(
             tag=EventTag.Organization.OrganizationRoleDeclineInvite,
-            ip_address=request.remote_addr,
+            request=request,
             additional={
                 "submitted_by_user_id": str(submitter_user.id),
                 "role_name": desired_role,
@@ -900,7 +1022,7 @@ def verify_organization_role(request):
         )
         user.record_event(
             tag=EventTag.Account.OrganizationRoleDeclineInvite,
-            ip_address=request.remote_addr,
+            request=request,
             additional={
                 "submitted_by_user_id": str(submitter_user.id),
                 "organization_name": organization.name,
@@ -944,7 +1066,7 @@ def verify_organization_role(request):
     submitter_user = user_service.get_user(data.get("submitter_id"))
     organization.record_event(
         tag=EventTag.Organization.OrganizationRoleAdd,
-        ip_address=request.remote_addr,
+        request=request,
         additional={
             "submitted_by_user_id": str(submitter_user.id),
             "role_name": desired_role,
@@ -953,7 +1075,7 @@ def verify_organization_role(request):
     )
     user.record_event(
         tag=EventTag.Account.OrganizationRoleAdd,
-        ip_address=request.remote_addr,
+        request=request,
         additional={
             "submitted_by_user_id": str(submitter_user.id),
             "organization_name": organization.name,
@@ -1065,7 +1187,7 @@ def verify_project_role(request):
         submitter_user = user_service.get_user(data.get("submitter_id"))
         project.record_event(
             tag=EventTag.Project.RoleDeclineInvite,
-            ip_address=request.remote_addr,
+            request=request,
             additional={
                 "submitted_by": submitter_user.username,
                 "role_name": desired_role,
@@ -1074,7 +1196,7 @@ def verify_project_role(request):
         )
         user.record_event(
             tag=EventTag.Account.RoleDeclineInvite,
-            ip_address=request.remote_addr,
+            request=request,
             additional={
                 "submitted_by": submitter_user.username,
                 "project_name": project.name,
@@ -1097,12 +1219,11 @@ def verify_project_role(request):
             name=project.name,
             action=f"accepted {desired_role} {user.username}",
             submitted_by=request.user,
-            submitted_from=request.remote_addr,
         )
     )
     project.record_event(
         tag=EventTag.Project.RoleAdd,
-        ip_address=request.remote_addr,
+        request=request,
         additional={
             "submitted_by": request.user.username,
             "role_name": desired_role,
@@ -1111,7 +1232,7 @@ def verify_project_role(request):
     )
     user.record_event(
         tag=EventTag.Account.RoleAdd,
-        ip_address=request.remote_addr,
+        request=request,
         additional={
             "submitted_by": request.user.username,
             "project_name": project.name,
@@ -1192,6 +1313,12 @@ def _login_user(request, userid, two_factor_method=None, two_factor_label=None):
         request.session.invalidate()
         request.session.update(data)
 
+    # We've logged the user in, so we want to ensure that we invalid the cache
+    # for our security policy, if we're using one that can be reset during login
+    security_policy = request.registry.queryUtility(ISecurityPolicy)
+    if hasattr(security_policy, "reset"):
+        security_policy.reset(request)
+
     # Remember the userid using the authentication policy.
     headers = remember(request, str(userid))
 
@@ -1203,9 +1330,10 @@ def _login_user(request, userid, two_factor_method=None, two_factor_label=None):
     # records when the last login was.
     user_service = request.find_service(IUserService, context=None)
     user_service.update_user(userid, last_login=datetime.datetime.utcnow())
-    user_service.record_event(
-        userid,
+    user = user_service.get_user(userid)
+    user.record_event(
         tag=EventTag.Account.LoginSuccess,
+        request=request,
         additional={
             "two_factor_method": two_factor_method,
             "two_factor_label": two_factor_label,
@@ -1270,6 +1398,7 @@ def reauthenticate(request, _form_class=ReAuthenticateForm):
         username=request.user.username,
         next_route=request.matched_route.name,
         next_route_matchdict=json.dumps(request.matchdict),
+        next_route_query=json.dumps(request.GET.mixed()),
         user_service=user_service,
         action="reauthenticate",
         check_password_metrics_tags=[
@@ -1280,7 +1409,9 @@ def reauthenticate(request, _form_class=ReAuthenticateForm):
 
     if form.next_route.data and form.next_route_matchdict.data:
         redirect_to = request.route_path(
-            form.next_route.data, **json.loads(form.next_route_matchdict.data)
+            form.next_route.data,
+            **json.loads(form.next_route_matchdict.data)
+            | dict(_query=json.loads(form.next_route_query.data)),
         )
     else:
         redirect_to = request.route_path("manage.projects")
@@ -1309,7 +1440,6 @@ def reauthenticate(request, _form_class=ReAuthenticateForm):
 class ManageAccountPublishingViews:
     def __init__(self, request):
         self.request = request
-        self.oidc_enabled = self.request.registry.settings["warehouse.oidc.enabled"]
         self.project_factory = ProjectFactory(request)
         self.metrics = self.request.find_service(IMetricsService, context=None)
 
@@ -1354,19 +1484,15 @@ class ManageAccountPublishingViews:
     @property
     def default_response(self):
         return {
-            "oidc_enabled": self.oidc_enabled,
             "pending_github_publisher_form": self.pending_github_publisher_form,
         }
 
     @view_config(request_method="GET")
     def manage_publishing(self):
-        if not self.oidc_enabled:
-            raise HTTPNotFound
-
-        if self.request.flags.enabled(AdminFlagValue.DISALLOW_OIDC):
+        if self.request.flags.disallow_oidc():
             self.request.session.flash(
-                (
-                    "OpenID Connect is temporarily disabled. "
+                self.request._(
+                    "Trusted publishing is temporarily disabled. "
                     "See https://pypi.org/help#admin-intervention for details."
                 ),
                 queue="error",
@@ -1376,16 +1502,14 @@ class ManageAccountPublishingViews:
         return self.default_response
 
     @view_config(
-        request_method="POST", request_param=PendingGitHubPublisherForm.__params__
+        request_method="POST",
+        request_param=PendingGitHubPublisherForm.__params__,
     )
     def add_pending_github_oidc_publisher(self):
-        if not self.oidc_enabled:
-            raise HTTPNotFound
-
-        if self.request.flags.enabled(AdminFlagValue.DISALLOW_OIDC):
+        if self.request.flags.disallow_oidc(AdminFlagValue.DISALLOW_GITHUB_OIDC):
             self.request.session.flash(
-                (
-                    "OpenID Connect is temporarily disabled. "
+                self.request._(
+                    "GitHub-based trusted publishing is temporarily disabled. "
                     "See https://pypi.org/help#admin-intervention for details."
                 ),
                 queue="error",
@@ -1400,7 +1524,7 @@ class ManageAccountPublishingViews:
             self.request.session.flash(
                 self.request._(
                     "You must have a verified email in order to register a "
-                    "pending OpenID Connect publisher. "
+                    "pending trusted publisher. "
                     "See https://pypi.org/help#openid-connect for details."
                 ),
                 queue="error",
@@ -1412,7 +1536,7 @@ class ManageAccountPublishingViews:
         if len(self.request.user.pending_oidc_publishers) >= 3:
             self.request.session.flash(
                 self.request._(
-                    "You can't register more than 3 pending OpenID Connect "
+                    "You can't register more than 3 pending trusted "
                     "publishers at once."
                 ),
                 queue="error",
@@ -1428,8 +1552,8 @@ class ManageAccountPublishingViews:
             )
             return HTTPTooManyRequests(
                 self.request._(
-                    "There have been too many attempted OpenID Connect registrations. "
-                    "Try again later."
+                    "There have been too many attempted trusted publisher "
+                    "registrations. Try again later."
                 ),
                 retry_after=exc.resets_in.total_seconds(),
             )
@@ -1440,6 +1564,10 @@ class ManageAccountPublishingViews:
         form = response["pending_github_publisher_form"]
 
         if not form.validate():
+            self.request.session.flash(
+                self.request._("The trusted publisher could not be registered"),
+                queue="error",
+            )
             return response
 
         publisher_already_exists = (
@@ -1448,6 +1576,7 @@ class ManageAccountPublishingViews:
                 repository_name=form.repository.data,
                 repository_owner=form.normalized_owner,
                 workflow_filename=form.workflow_filename.data,
+                environment=form.normalized_environment,
             )
             .first()
             is not None
@@ -1456,7 +1585,7 @@ class ManageAccountPublishingViews:
         if publisher_already_exists:
             self.request.session.flash(
                 self.request._(
-                    "This OpenID Connect publisher has already been registered. "
+                    "This trusted publisher has already been registered. "
                     "Please contact PyPI's admins if this wasn't intentional."
                 ),
                 queue="error",
@@ -1470,24 +1599,30 @@ class ManageAccountPublishingViews:
             repository_owner=form.normalized_owner,
             repository_owner_id=form.owner_id,
             workflow_filename=form.workflow_filename.data,
+            environment=form.normalized_environment,
         )
 
         self.request.db.add(pending_publisher)
+        self.request.db.flush()  # To get the new ID
 
         self.request.user.record_event(
             tag=EventTag.Account.PendingOIDCPublisherAdded,
-            ip_address=self.request.remote_addr,
+            request=self.request,
             additional={
                 "project": pending_publisher.project_name,
                 "publisher": pending_publisher.publisher_name,
                 "id": str(pending_publisher.id),
                 "specifier": str(pending_publisher),
+                "url": pending_publisher.publisher_url(),
+                "submitted_by": self.request.user.username,
             },
         )
 
         self.request.session.flash(
-            "Registered a new publishing publisher to create "
-            f"the project '{pending_publisher.project_name}'.",
+            self.request._(
+                "Registered a new pending publisher to create "
+                f"the project '{pending_publisher.project_name}'."
+            ),
             queue="success",
         )
 
@@ -1497,15 +1632,15 @@ class ManageAccountPublishingViews:
 
         return HTTPSeeOther(self.request.path)
 
-    @view_config(request_method="POST", request_param=DeletePublisherForm.__params__)
+    @view_config(
+        request_method="POST",
+        request_param=DeletePublisherForm.__params__,
+    )
     def delete_pending_oidc_publisher(self):
-        if not self.oidc_enabled:
-            raise HTTPNotFound
-
-        if self.request.flags.enabled(AdminFlagValue.DISALLOW_OIDC):
+        if self.request.flags.disallow_oidc():
             self.request.session.flash(
-                (
-                    "OpenID Connect is temporarily disabled. "
+                self.request._(
+                    "Trusted publishing is temporarily disabled. "
                     "See https://pypi.org/help#admin-intervention for details."
                 ),
                 queue="error",
@@ -1516,43 +1651,59 @@ class ManageAccountPublishingViews:
 
         form = DeletePublisherForm(self.request.POST)
 
-        if form.validate():
-            pending_publisher = self.request.db.query(PendingOIDCPublisher).get(
-                form.publisher_id.data
-            )
-
-            # pending_publisher will be `None` here if someone manually
-            # futzes with the form.
-            if pending_publisher is None:
-                self.request.session.flash(
-                    "Invalid publisher for user",
-                    queue="error",
-                )
-                return self.default_response
-
+        if not form.validate():
             self.request.session.flash(
-                f"Removed publisher for project '{pending_publisher.project_name}'",
-                queue="success",
+                self.request._("Invalid publisher ID"),
+                queue="error",
             )
+            return self.default_response
 
-            self.metrics.increment(
-                "warehouse.oidc.delete_pending_publisher.ok",
-                tags=[f"publisher:{pending_publisher.publisher_name}"],
+        pending_publisher = self.request.db.get(
+            PendingOIDCPublisher, form.publisher_id.data
+        )
+
+        # pending_publisher will be `None` here if someone manually
+        # futzes with the form.
+        if pending_publisher is None:
+            self.request.session.flash(
+                self.request._("Invalid publisher ID"),
+                queue="error",
             )
+            return self.default_response
 
-            self.request.user.record_event(
-                tag=EventTag.Account.PendingOIDCPublisherRemoved,
-                ip_address=self.request.remote_addr,
-                additional={
-                    "project": pending_publisher.project_name,
-                    "publisher": pending_publisher.publisher_name,
-                    "id": str(pending_publisher.id),
-                    "specifier": str(pending_publisher),
-                },
+        if pending_publisher.added_by != self.request.user:
+            self.request.session.flash(
+                self.request._("Invalid publisher ID"),
+                queue="error",
             )
+            return self.default_response
 
-            self.request.db.delete(pending_publisher)
+        self.request.session.flash(
+            self.request._(
+                "Removed trusted publisher for project "
+                f"{pending_publisher.project_name!r}"
+            ),
+            queue="success",
+        )
 
-            return HTTPSeeOther(self.request.path)
+        self.metrics.increment(
+            "warehouse.oidc.delete_pending_publisher.ok",
+            tags=[f"publisher:{pending_publisher.publisher_name}"],
+        )
 
-        return self.default_response
+        self.request.user.record_event(
+            tag=EventTag.Account.PendingOIDCPublisherRemoved,
+            request=self.request,
+            additional={
+                "project": pending_publisher.project_name,
+                "publisher": pending_publisher.publisher_name,
+                "id": str(pending_publisher.id),
+                "specifier": str(pending_publisher),
+                "url": pending_publisher.publisher_url(),
+                "submitted_by": self.request.user.username,
+            },
+        )
+
+        self.request.db.delete(pending_publisher)
+
+        return HTTPSeeOther(self.request.path)

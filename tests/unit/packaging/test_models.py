@@ -163,16 +163,40 @@ class TestProject:
             [(Allow, f"oidc:{publisher.id}", ["upload"])], key=lambda x: x[1]
         ) + sorted(
             [
-                (Allow, f"user:{owner1.user.id}", ["manage:project", "upload"]),
-                (Allow, f"user:{owner2.user.id}", ["manage:project", "upload"]),
-                (Allow, f"user:{owner3.user.id}", ["manage:project", "upload"]),
-                (Allow, f"user:{owner4.user.id}", ["manage:project", "upload"]),
+                (
+                    Allow,
+                    f"user:{owner1.user.id}",
+                    ["manage:project", "upload"],
+                ),
+                (
+                    Allow,
+                    f"user:{owner2.user.id}",
+                    ["manage:project", "upload"],
+                ),
+                (
+                    Allow,
+                    f"user:{owner3.user.id}",
+                    ["manage:project", "upload"],
+                ),
+                (
+                    Allow,
+                    f"user:{owner4.user.id}",
+                    ["manage:project", "upload"],
+                ),
             ],
             key=lambda x: x[1],
         ) + sorted(
             [
-                (Allow, f"user:{maintainer1.user.id}", ["upload"]),
-                (Allow, f"user:{maintainer2.user.id}", ["upload"]),
+                (
+                    Allow,
+                    f"user:{maintainer1.user.id}",
+                    ["upload"],
+                ),
+                (
+                    Allow,
+                    f"user:{maintainer2.user.id}",
+                    ["upload"],
+                ),
             ],
             key=lambda x: x[1],
         )
@@ -439,6 +463,7 @@ class TestRelease:
                 "https://www.github.com/pypi/warehouse.git/",
                 "https://api.github.com/repos/pypi/warehouse",
             ),
+            ("git@bitbucket.org:definex/dsgnutils.git", None),
         ],
     )
     def test_github_repo_info_url(self, db_session, home_page, expected):
@@ -526,7 +551,7 @@ class TestFile:
         )
 
         assert rfile.path == expected
-        assert rfile.pgp_path == expected + ".asc"
+        assert rfile.metadata_path == expected + ".metadata"
 
     def test_query_paths(self, db_session):
         project = DBProjectFactory.create()
@@ -547,10 +572,10 @@ class TestFile:
         )
 
         results = (
-            db_session.query(File.path, File.pgp_path)
+            db_session.query(File.path, File.metadata_path)
             .filter(File.id == rfile.id)
             .limit(1)
             .one()
         )
 
-        assert results == (expected, expected + ".asc")
+        assert results == (expected, expected + ".metadata")

@@ -25,11 +25,12 @@ import html5lib
 import html5lib.serializer
 import html5lib.treewalkers
 import jinja2
-import packaging.version
+import packaging_legacy.version
 import pytz
 
 from natsort import natsorted
 from pyramid.threadlocal import get_current_request
+from urllib3.util import parse_url
 
 from warehouse.utils.http import is_valid_uri
 
@@ -106,7 +107,7 @@ def tojson(value):
 
 
 def urlparse(value):
-    return urllib.parse.urlparse(value)
+    return parse_url(value)
 
 
 def format_tags(tags):
@@ -157,7 +158,7 @@ def contains_valid_uris(items):
 
 
 def parse_version(version_str):
-    return packaging.version.parse(version_str)
+    return packaging_legacy.version.parse(version_str)
 
 
 def localize_datetime(timestamp):
@@ -174,18 +175,28 @@ def is_recent(timestamp):
     return False
 
 
-def format_author_email(metadata_email: str) -> tuple[str, str]:
+def format_email(metadata_email: str) -> tuple[str, str]:
     """
     Return the name and email address from a metadata RFC-822 string.
     Use Jinja's `first` and `last` to access each part in a template.
     TODO: Support more than one email address, per RFC-822.
     """
-    author_emails = []
-    for author_name, author_email in getaddresses([metadata_email]):
-        if "@" not in author_email:
-            return author_name, ""
-        author_emails.append((author_name, author_email))
-    return author_emails[0][0], author_emails[0][1]
+    emails = []
+    for name, email in getaddresses([metadata_email]):
+        if "@" not in email:
+            return name, ""
+        emails.append((name, email))
+    return emails[0][0], emails[0][1]
+
+
+def remove_invalid_xml_unicode(value: str | None) -> str | None:
+    """
+    Remove invalid unicode characters from a string.
+    Useful for XML Templates.
+
+    Ref: https://www.w3.org/TR/REC-xml/#NT-Char
+    """
+    return "".join(c for c in value if ord(c) >= 32) if value else value
 
 
 def includeme(config):

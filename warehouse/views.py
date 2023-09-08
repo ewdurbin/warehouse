@@ -37,9 +37,10 @@ from pyramid.view import (
     view_config,
     view_defaults,
 )
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.sql import exists, expression
 from trove_classifiers import deprecated_classifiers, sorted_classifiers
+from webob.multidict import MultiDict
 
 from warehouse.accounts import REDIRECT_FIELD_NAME
 from warehouse.accounts.models import User
@@ -56,7 +57,7 @@ from warehouse.packaging.models import (
     Project,
     ProjectFactory,
     Release,
-    release_classifiers,
+    ReleaseClassifiers,
 )
 from warehouse.search.queries import SEARCH_FILTER_ORDER, get_es_query
 from warehouse.utils.http import is_safe_url
@@ -133,9 +134,29 @@ def forbidden(exc, request):
 
     # Check if the error has a "result" attribute and if it is a WarehouseDenied
     if hasattr(exc, "result") and isinstance(exc.result, WarehouseDenied):
+        # If the forbidden error is because the user does not have a verified
+        # email address, redirect them to their account page for email verification.
+        if exc.result.reason == "unverified_email":
+            request.session.flash(
+                request._(
+                    "You must verify your **primary** email address before you "
+                    "can perform this action."
+                ),
+                queue="error",
+            )
+            url = request.route_url(
+                "manage.account",
+                _query={REDIRECT_FIELD_NAME: request.path_qs},
+            )
+            return HTTPSeeOther(url)
+
         # If the forbidden error is because the user doesn't have 2FA enabled, we'll
         # redirect them to the 2FA page
-        if exc.result.reason in {"owners_require_2fa", "pypi_mandates_2fa"}:
+        if exc.result.reason in {
+            "owners_require_2fa",
+            "pypi_mandates_2fa",
+            "manage_2fa_required",
+        }:
             request.session.flash(
                 request._(
                     "Two-factor authentication must be enabled on your account to "
@@ -246,7 +267,7 @@ def index(request):
 )
 def locale(request):
     try:
-        form = SetLocaleForm(locale_id=request.GET.getone("locale_id"))
+        form = SetLocaleForm(MultiDict({"locale_id": request.GET.getone("locale_id")}))
     except KeyError:
         raise HTTPBadRequest("Invalid amount of locale_id parameters provided")
 
@@ -317,8 +338,8 @@ def search(request):
         request.db.query(Classifier)
         .with_entities(Classifier.classifier)
         .filter(
-            exists([release_classifiers.c.trove_id]).where(
-                release_classifiers.c.trove_id == Classifier.id
+            exists(ReleaseClassifiers.trove_id).where(
+                ReleaseClassifiers.trove_id == Classifier.id
             ),
             Classifier.classifier.notin_(deprecated_classifiers.keys()),
         )
@@ -501,7 +522,7 @@ def sidebar_sponsor_logo(request):
 def health(request):
     # This will ensure that we can access the database and run queries against
     # it without doing anything that will take a lock or block other queries.
-    request.db.execute("SELECT 1")
+    request.db.execute(text("SELECT 1"))
 
     # Nothing will actually check this, but it's a little nicer to have
     # something to return besides an empty body.

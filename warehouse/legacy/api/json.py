@@ -19,25 +19,7 @@ from sqlalchemy.orm import Load, contains_eager, joinedload
 from warehouse.cache.http import cache_control
 from warehouse.cache.origin import origin_cache
 from warehouse.packaging.models import File, Project, Release, ReleaseURL
-
-# Generate appropriate CORS headers for the JSON endpoint.
-# We want to allow Cross-Origin requests here so that users can interact
-# with these endpoints via XHR/Fetch APIs in the browser.
-_CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": ", ".join(
-        [
-            "Content-Type",
-            "If-Match",
-            "If-Modified-Since",
-            "If-None-Match",
-            "If-Unmodified-Since",
-        ]
-    ),
-    "Access-Control-Allow-Methods": "GET",
-    "Access-Control-Max-Age": "86400",  # 1 day.
-    "Access-Control-Expose-Headers": ", ".join(["X-PyPI-Last-Serial"]),
-}
+from warehouse.utils.cors import _CORS_HEADERS
 
 _RELEASE_CACHE_DECORATOR = [
     cache_control(15 * 60),  # 15 minutes
@@ -66,7 +48,10 @@ def _json_data(request, project, release, *, all_releases):
         request.db.query(Release, File)
         .options(
             Load(Release).load_only(
-                "version", "requires_python", "yanked", "yanked_reason"
+                Release.version,
+                Release.requires_python,
+                Release.yanked,
+                Release.yanked_reason,
             )
         )
         .outerjoin(File)
@@ -99,7 +84,9 @@ def _json_data(request, project, release, *, all_releases):
                 "filename": f.filename,
                 "packagetype": f.packagetype,
                 "python_version": f.python_version,
-                "has_sig": f.has_signature,
+                # TODO: Remove this once we've had a long enough time with it
+                #       here to consider it no longer in use.
+                "has_sig": False,
                 "comment_text": f.comment_text,
                 "md5_digest": f.md5_digest,
                 "digests": {

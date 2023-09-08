@@ -14,6 +14,7 @@
 // Import stimulus
 import { Application } from "@hotwired/stimulus";
 import { definitionsFromContext } from "@hotwired/stimulus-webpack-helpers";
+import { Autocomplete } from "stimulus-autocomplete";
 
 // We'll use docReady as a modern replacement for $(document).ready() which
 // does not require all of jQuery to use. This will let us use it without
@@ -24,7 +25,6 @@ import docReady from "warehouse/utils/doc-ready";
 import Analytics from "warehouse/utils/analytics";
 import HTMLInclude from "warehouse/utils/html-include";
 import * as formUtils from "warehouse/utils/forms";
-import Clipboard from "clipboard";
 import PositionWarning from "warehouse/utils/position-warning";
 import Statuspage from "warehouse/utils/statuspage";
 import timeAgo from "warehouse/utils/timeago";
@@ -66,39 +66,6 @@ docReady(formUtils.submitTriggers);
 docReady(formUtils.registerFormValidation);
 
 docReady(Statuspage);
-
-// Copy handler for copy tooltips, e.g.
-//   - the pip command on package detail page
-//   - the copy hash on package detail page
-//   - the copy hash on release maintainers page
-docReady(() => {
-  let setCopiedTooltip = (e) => {
-    e.trigger.setAttribute("data-tooltip-label", "Copied");
-    e.trigger.setAttribute("role", "alert");
-    e.clearSelection();
-  };
-
-  new Clipboard(".copy-tooltip").on("success", setCopiedTooltip);
-
-  let setOriginalLabel = (element) => {
-    element.setAttribute("data-tooltip-label", "Copy to clipboard");
-    element.removeAttribute("role");
-    element.blur();
-  };
-
-  let tooltippedElems = Array.from(document.querySelectorAll(".copy-tooltip"));
-
-  tooltippedElems.forEach((element) => {
-    element.addEventListener("focusout",
-      setOriginalLabel.bind(undefined, element),
-      false
-    );
-    element.addEventListener("mouseout",
-      setOriginalLabel.bind(undefined, element),
-      false
-    );
-  });
-});
 
 // Close modals when escape button is pressed
 docReady(() => {
@@ -227,3 +194,4 @@ document.addEventListener("CSILoaded", PositionWarning);
 const application = Application.start();
 const context = require.context("./controllers", true, /\.js$/);
 application.load(definitionsFromContext(context));
+application.register("autocomplete", Autocomplete);

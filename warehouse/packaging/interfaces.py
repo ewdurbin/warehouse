@@ -32,6 +32,18 @@ class IGenericFileStorage(Interface):
         at the given path.
         """
 
+    def get_metadata(path):
+        """
+        Return a dictionary containing any user-created metadata associated
+        with the file at a given path. Implementations may or may not store
+        or provide such metadata.
+        """
+
+    def get_checksum(path):
+        """
+        Return the md5 digest of the file at a given path as a lowercase string.
+        """
+
     def store(path, file_path, *, meta=None):
         """
         Save the file located at file_path to the file storage at the location
@@ -62,7 +74,7 @@ class IDocsStorage(Interface):
 
 
 class IProjectService(Interface):
-    def create_project(name, creator, *, creator_is_owner=True):
+    def create_project(name, creator, request, *, creator_is_owner=True):
         """
         Creates a new project, recording a user as its creator.
 

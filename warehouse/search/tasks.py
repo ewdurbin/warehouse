@@ -12,17 +12,19 @@
 
 import binascii
 import os
-import urllib
+import urllib.parse
 
 import certifi
 import elasticsearch
 import redis
 import requests_aws4auth
+import sentry_sdk
 
 from elasticsearch.helpers import parallel_bulk
 from elasticsearch_dsl import serializer
-from sqlalchemy import func
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import aliased
+from urllib3.util import parse_url
 
 from warehouse import tasks
 from warehouse.packaging.models import (
@@ -30,7 +32,7 @@ from warehouse.packaging.models import (
     Description,
     Project,
     Release,
-    release_classifiers,
+    ReleaseClassifiers,
 )
 from warehouse.packaging.search import Project as ProjectDocument
 from warehouse.search.utils import get_index
@@ -38,9 +40,8 @@ from warehouse.utils.db import windowed_query
 
 
 def _project_docs(db, project_name=None):
-
     releases_list = (
-        db.query(Release.id)
+        select(Release.id)
         .filter(Release.yanked.is_(False), Release.files)
         .order_by(
             Release.project_id,
@@ -54,32 +55,22 @@ def _project_docs(db, project_name=None):
         releases_list = releases_list.join(Project).filter(Project.name == project_name)
 
     releases_list = releases_list.subquery()
-
-    r = aliased(Release, name="r")
-
-    all_versions = (
-        db.query(func.array_agg(r.version))
-        .filter(r.project_id == Release.project_id)
-        .correlate(Release)
-        .scalar_subquery()
-        .label("all_versions")
-    )
+    rlist = aliased(Release, releases_list)
 
     classifiers = (
-        db.query(func.array_agg(Classifier.classifier))
-        .select_from(release_classifiers)
-        .join(Classifier, Classifier.id == release_classifiers.c.trove_id)
-        .filter(Release.id == release_classifiers.c.release_id)
+        select(func.array_agg(Classifier.classifier))
+        .select_from(ReleaseClassifiers)
+        .join(Classifier, Classifier.id == ReleaseClassifiers.trove_id)
+        .filter(Release.id == ReleaseClassifiers.release_id)
         .correlate(Release)
         .scalar_subquery()
         .label("classifiers")
     )
 
     release_data = (
-        db.query(
+        select(
             Description.raw.label("description"),
             Release.version.label("latest_version"),
-            all_versions,
             Release.author,
             Release.author_email,
             Release.maintainer,
@@ -94,13 +85,13 @@ def _project_docs(db, project_name=None):
             Project.normalized_name,
             Project.name,
         )
-        .select_from(releases_list)
-        .join(Release, Release.id == releases_list.c.id)
+        .select_from(rlist)
+        .join(Release, Release.id == rlist.id)
         .join(Description)
         .outerjoin(Release.project)
     )
 
-    for release in windowed_query(release_data, Project.id, 25000):
+    for release in windowed_query(db, release_data, Project.id, 25000):
         p = ProjectDocument.from_db(release)
         p._index = None
         p.full_clean()
@@ -133,10 +124,10 @@ def reindex(self, request):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
     try:
         with SearchLock(r, timeout=30 * 60, blocking_timeout=30):
-            p = urllib.parse.urlparse(request.registry.settings["elasticsearch.url"])
+            p = parse_url(request.registry.settings["elasticsearch.url"])
             qs = urllib.parse.parse_qs(p.query)
             kwargs = {
-                "hosts": [urllib.parse.urlunparse(p[:2] + ("",) * 4)],
+                "hosts": [urllib.parse.urlunparse((p.scheme, p.netloc) + ("",) * 4)],
                 "verify_certs": True,
                 "ca_certs": certifi.where(),
                 "timeout": 30,
@@ -184,7 +175,7 @@ def reindex(self, request):
             # From this point on, if any error occurs, we want to be able to delete our
             # in progress index.
             try:
-                request.db.execute("SET statement_timeout = '600s'")
+                request.db.execute(text("SET statement_timeout = '600s'"))
 
                 for _ in parallel_bulk(
                     client, _project_docs(request.db), index=new_index_name
@@ -222,6 +213,7 @@ def reindex(self, request):
             else:
                 client.indices.put_alias(name=index_base, index=new_index_name)
     except redis.exceptions.LockError as exc:
+        sentry_sdk.capture_exception(exc)
         raise self.retry(countdown=60, exc=exc)
 
 
@@ -246,6 +238,7 @@ def reindex_project(self, request, project_name):
             ):
                 pass
     except redis.exceptions.LockError as exc:
+        sentry_sdk.capture_exception(exc)
         raise self.retry(countdown=60, exc=exc)
 
 
@@ -261,4 +254,5 @@ def unindex_project(self, request, project_name):
             except elasticsearch.exceptions.NotFoundError:
                 pass
     except redis.exceptions.LockError as exc:
+        sentry_sdk.capture_exception(exc)
         raise self.retry(countdown=60, exc=exc)

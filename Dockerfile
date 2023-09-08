@@ -1,6 +1,6 @@
 # First things first, we build an image which is where we're going to compile
 # our static assets with. We use this stage in development.
-FROM node:18.13.0-bullseye as static-deps
+FROM node:20.5.1-bookworm as static-deps
 
 WORKDIR /opt/warehouse/src/
 
@@ -12,7 +12,8 @@ COPY package.json package-lock.json .babelrc /opt/warehouse/src/
 # Installing npm dependencies is done as a distinct step and *prior* to copying
 # over our static files so that, you guessed it, we don't invalidate the cache
 # of installed dependencies just because files have been modified.
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci
 
 
 
@@ -34,10 +35,77 @@ RUN NODE_ENV=production npm run build
 
 
 
+# We'll build a light-weight layer along the way with just docs stuff
+FROM python:3.11.5-slim-bookworm as docs
+
+# By default, Docker has special steps to avoid keeping APT caches in the layers, which
+# is good, but in our case, we're going to mount a special cache volume (kept between
+# builds), so we WANT the cache to persist.
+RUN set -eux; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache;
+
+# Install System level build requirements, this is done before
+# everything else because these are rarely ever going to change.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -x \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y \
+        build-essential git libcairo2-dev libfreetype6-dev libjpeg-dev libpng-dev libz-dev
+
+# We create an /opt directory with a virtual environment in it to store our
+# application in.
+RUN set -x \
+    && python3 -m venv /opt/warehouse
+
+# Now that we've created our virtual environment, we'll go ahead and update
+# our $PATH to refer to it first.
+ENV PATH="/opt/warehouse/bin:${PATH}"
+
+# Next, we want to update pip, setuptools, and wheel inside of this virtual
+# environment to ensure that we have the latest versions of them.
+# TODO: We use --require-hashes in our requirements files, but not here, making
+#       the ones in the requirements files kind of a moot point. We should
+#       probably pin these too, and update them as we do anything else.
+RUN pip --no-cache-dir --disable-pip-version-check install --upgrade pip setuptools wheel
+
+# We copy this into the docker container prior to copying in the rest of our
+# application so that we can skip installing requirements if the only thing
+# that has changed is the Warehouse code itself.
+COPY requirements /tmp/requirements
+
+# Install the Python level Warehouse requirements, this is done after copying
+# the requirements but prior to copying Warehouse itself into the container so
+# that code changes don't require triggering an entire install of all of
+# Warehouse's dependencies.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -x \
+    && pip --disable-pip-version-check \
+            install --no-deps \
+            -r /tmp/requirements/docs-dev.txt \
+            -r /tmp/requirements/docs-user.txt \
+            -r /tmp/requirements/docs-blog.txt \
+    && pip check \
+    && find /opt/warehouse -name '*.pyc' -delete
+
+WORKDIR /opt/warehouse/src/
+
+# We'll make the docs container run as a non-root user, ensure that the built
+# documentation belongs to the same user on the host machine.
+ARG USER_ID
+ARG GROUP_ID
+RUN groupadd -o -g $GROUP_ID -r docs
+RUN useradd -o -m -u $USER_ID -g $GROUP_ID docs
+RUN chown docs /opt/warehouse/src
+USER docs
+
+
+
 
 # Now we're going to build our actual application, but not the actual production
 # image that it gets deployed into.
-FROM python:3.11.1-slim-bullseye as build
+FROM python:3.11.5-slim-bookworm as build
 
 # Define whether we're building a production or a development image. This will
 # generally be used to control whether or not we install our development and
@@ -46,12 +114,21 @@ ARG DEVEL=no
 
 # To enable Ipython in the development environment set to yes (for using ipython
 # as the warehouse shell interpreter,
-# i.e. 'docker-compose run --rm web python -m warehouse shell --type=ipython')
+# i.e. 'docker compose run --rm web python -m warehouse shell --type=ipython')
 ARG IPYTHON=no
+
+# By default, Docker has special steps to avoid keeping APT caches in the layers, which
+# is good, but in our case, we're going to mount a special cache volume (kept between
+# builds), so we WANT the cache to persist.
+RUN set -eux; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache;
 
 # Install System level Warehouse build requirements, this is done before
 # everything else because these are rarely ever going to change.
-RUN set -x \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -x \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
         build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev \
@@ -61,7 +138,6 @@ RUN set -x \
 # application in.
 RUN set -x \
     && python3 -m venv /opt/warehouse
-
 
 # Now that we've created our virtual environment, we'll go ahead and update
 # our $PATH to refer to it first.
@@ -81,32 +157,34 @@ COPY requirements /tmp/requirements
 
 # Install our development dependencies if we're building a development install
 # otherwise this will do nothing.
-RUN set -x \
-    && if [ "$DEVEL" = "yes" ]; then pip --no-cache-dir --disable-pip-version-check install -r /tmp/requirements/dev.txt; fi
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -x \
+    && if [ "$DEVEL" = "yes" ]; then pip --disable-pip-version-check install -r /tmp/requirements/dev.txt; fi
 
-RUN set -x \
-    && if [ "$DEVEL" = "yes" ] && [ "$IPYTHON" = "yes" ]; then pip --no-cache-dir --disable-pip-version-check install -r /tmp/requirements/ipython.txt; fi
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -x \
+    && if [ "$DEVEL" = "yes" ] && [ "$IPYTHON" = "yes" ]; then pip --disable-pip-version-check install -r /tmp/requirements/ipython.txt; fi
 
 # Install the Python level Warehouse requirements, this is done after copying
 # the requirements but prior to copying Warehouse itself into the container so
 # that code changes don't require triggering an entire install of all of
 # Warehouse's dependencies.
-RUN set -x \
-    && pip --no-cache-dir --disable-pip-version-check \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -x \
+    && pip --disable-pip-version-check \
             install --no-deps \
                     -r /tmp/requirements/deploy.txt \
                     -r /tmp/requirements/main.txt \
-                    $(if [ "$DEVEL" = "yes" ]; then echo '-r /tmp/requirements/tests.txt -r /tmp/requirements/lint.txt -r /tmp/requirements/docs.txt'; fi) \
+                    $(if [ "$DEVEL" = "yes" ]; then echo '-r /tmp/requirements/tests.txt -r /tmp/requirements/lint.txt'; fi) \
     && pip check \
     && find /opt/warehouse -name '*.pyc' -delete
 
 
 
 
-
 # Now we're going to build our actual application image, which will eventually
 # pull in the static files that were built above.
-FROM python:3.11.1-slim-bullseye
+FROM python:3.11.5-slim-bookworm
 
 # Setup some basic environment variables that are ~never going to change.
 ENV PYTHONUNBUFFERED 1
@@ -128,11 +206,13 @@ RUN set -x \
 
 # Install System level Warehouse requirements, this is done before everything
 # else because these are rarely ever going to change.
-RUN set -x \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -x \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
         libpq5 libxml2 libxslt1.1 libcurl4  \
-        $(if [ "$DEVEL" = "yes" ]; then echo 'bash libjpeg62 postgresql-client build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev'; fi) \
+        $(if [ "$DEVEL" = "yes" ]; then echo 'bash libjpeg62 postgresql-client build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev vim'; fi) \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 

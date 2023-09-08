@@ -13,11 +13,9 @@
 import enum
 
 from collections import OrderedDict
-from urllib.parse import urlparse
 
 import packaging.utils
 
-from citext import CIText
 from github_reserved_names import ALL as GITHUB_RESERVED_NAMES
 from pyramid.authorization import Allow
 from pyramid.threadlocal import get_current_request
@@ -25,7 +23,6 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
-    Column,
     DateTime,
     Enum,
     FetchedValue,
@@ -33,20 +30,19 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    Table,
     Text,
     UniqueConstraint,
     func,
     orm,
     sql,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import CITEXT, UUID
 from sqlalchemy.exc import MultipleResultsFound, NoResultFound
 from sqlalchemy.ext.associationproxy import association_proxy
-from sqlalchemy.ext.declarative import declared_attr  # type: ignore
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import validates
-from sqlalchemy.orm.collections import attribute_mapped_collection
+from sqlalchemy.orm import attribute_keyed_dict, declared_attr, mapped_column, validates
+from urllib3.exceptions import LocationParseError
+from urllib3.util import parse_url
 
 from warehouse import db
 from warehouse.accounts.models import User
@@ -66,7 +62,6 @@ from warehouse.utils.attrs import make_repr
 
 
 class Role(db.Model):
-
     __tablename__ = "roles"
     __table_args__ = (
         Index("roles_user_id_idx", "user_id"),
@@ -76,11 +71,11 @@ class Role(db.Model):
 
     __repr__ = make_repr("role_name")
 
-    role_name = Column(Text, nullable=False)
-    user_id = Column(
+    role_name = mapped_column(Text, nullable=False)
+    user_id = mapped_column(
         ForeignKey("users.id", onupdate="CASCADE", ondelete="CASCADE"), nullable=False
     )
-    project_id = Column(
+    project_id = mapped_column(
         ForeignKey("projects.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
     )
@@ -90,13 +85,11 @@ class Role(db.Model):
 
 
 class RoleInvitationStatus(enum.Enum):
-
     Pending = "pending"
     Expired = "expired"
 
 
 class RoleInvitation(db.Model):
-
     __tablename__ = "role_invitations"
     __table_args__ = (
         Index("role_invitations_user_id_idx", "user_id"),
@@ -107,17 +100,17 @@ class RoleInvitation(db.Model):
 
     __repr__ = make_repr("invite_status", "user", "project")
 
-    invite_status = Column(
+    invite_status = mapped_column(
         Enum(RoleInvitationStatus, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
     )
-    token = Column(Text, nullable=False)
-    user_id = Column(
+    token = mapped_column(Text, nullable=False)
+    user_id = mapped_column(
         ForeignKey("users.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    project_id = Column(
+    project_id = mapped_column(
         ForeignKey("projects.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -152,9 +145,13 @@ class ProjectFactory:
 
 class TwoFactorRequireable:
     # Project owner requires 2FA for this project
-    owners_require_2fa = Column(Boolean, nullable=False, server_default=sql.false())
+    owners_require_2fa = mapped_column(
+        Boolean, nullable=False, server_default=sql.false()
+    )
     # PyPI requires 2FA for this project
-    pypi_mandates_2fa = Column(Boolean, nullable=False, server_default=sql.false())
+    pypi_mandates_2fa = mapped_column(
+        Boolean, nullable=False, server_default=sql.false()
+    )
 
     @hybrid_property
     def two_factor_required(self):
@@ -162,44 +159,32 @@ class TwoFactorRequireable:
 
 
 class Project(SitemapMixin, TwoFactorRequireable, HasEvents, db.Model):
-
     __tablename__ = "projects"
-    __table_args__ = (
-        CheckConstraint(
-            "name ~* '^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$'::text",
-            name="projects_valid_name",
-        ),
-        CheckConstraint(
-            "upload_limit <= 1073741824",  # 1.0 GiB == 1073741824 bytes
-            name="projects_upload_limit_max_value",
-        ),
-    )
-
     __repr__ = make_repr("name")
 
-    name = Column(Text, nullable=False)
-    normalized_name = Column(
+    name = mapped_column(Text, nullable=False)
+    normalized_name = mapped_column(
         Text,
         nullable=False,
         unique=True,
         server_default=FetchedValue(),
         server_onupdate=FetchedValue(),
     )
-    created = Column(
+    created = mapped_column(
         DateTime(timezone=False),
-        nullable=False,
+        nullable=True,
         server_default=sql.func.now(),
         index=True,
     )
-    has_docs = Column(Boolean)
-    upload_limit = Column(Integer, nullable=True)
-    total_size_limit = Column(BigInteger, nullable=True)
-    last_serial = Column(Integer, nullable=False, server_default=sql.text("0"))
-    total_size = Column(BigInteger, server_default=sql.text("0"))
+    has_docs = mapped_column(Boolean)
+    upload_limit = mapped_column(Integer, nullable=True)
+    total_size_limit = mapped_column(BigInteger, nullable=True)
+    last_serial = mapped_column(Integer, nullable=False, server_default=sql.text("0"))
+    total_size = mapped_column(BigInteger, server_default=sql.text("0"))
 
     organization = orm.relationship(
         Organization,
-        secondary=OrganizationProject.__table__,  # type: ignore
+        secondary=OrganizationProject.__table__,
         back_populates="projects",
         uselist=False,
         viewonly=True,
@@ -214,13 +199,30 @@ class Project(SitemapMixin, TwoFactorRequireable, HasEvents, db.Model):
         back_populates="project",
         passive_deletes=True,
     )
-    users = orm.relationship(User, secondary=Role.__table__, backref="projects", viewonly=True)  # type: ignore # noqa
+    users = orm.relationship(
+        User, secondary=Role.__table__, backref="projects", viewonly=True
+    )
     releases = orm.relationship(
         "Release",
         backref="project",
         cascade="all, delete-orphan",
         order_by=lambda: Release._pypi_ordering.desc(),  # type: ignore
         passive_deletes=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "name ~* '^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$'::text",
+            name="projects_valid_name",
+        ),
+        CheckConstraint(
+            "upload_limit <= 1073741824",  # 1.0 GiB == 1073741824 bytes
+            name="projects_upload_limit_max_value",
+        ),
+        Index(
+            "project_name_ultranormalized",
+            func.ultranormalize_name(name),
+        ),
     )
 
     def __getitem__(self, version):
@@ -268,8 +270,8 @@ class Project(SitemapMixin, TwoFactorRequireable, HasEvents, db.Model):
 
         # Get all of the users for this project.
         query = session.query(Role).filter(Role.project == self)
-        query = query.options(orm.lazyload("project"))
-        query = query.options(orm.lazyload("user"))
+        query = query.options(orm.lazyload(Role.project))
+        query = query.options(orm.lazyload(Role.user))
         permissions = {
             (role.user_id, "Administer" if role.role_name == "Owner" else "Upload")
             for role in query.all()
@@ -277,8 +279,8 @@ class Project(SitemapMixin, TwoFactorRequireable, HasEvents, db.Model):
 
         # Add all of the team members for this project.
         query = session.query(TeamProjectRole).filter(TeamProjectRole.project == self)
-        query = query.options(orm.lazyload("project"))
-        query = query.options(orm.lazyload("team"))
+        query = query.options(orm.lazyload(TeamProjectRole.project))
+        query = query.options(orm.lazyload(TeamProjectRole.team))
         for role in query.all():
             permissions |= {
                 (user.id, "Administer" if role.role_name.value == "Owner" else "Upload")
@@ -291,8 +293,8 @@ class Project(SitemapMixin, TwoFactorRequireable, HasEvents, db.Model):
                 OrganizationRole.organization == self.organization,
                 OrganizationRole.role_name == OrganizationRoleType.Owner,
             )
-            query = query.options(orm.lazyload("organization"))
-            query = query.options(orm.lazyload("user"))
+            query = query.options(orm.lazyload(OrganizationRole.organization))
+            query = query.options(orm.lazyload(OrganizationRole.user))
             permissions |= {(role.user_id, "Administer") for role in query.all()}
 
         for user_id, permission_name in sorted(permissions, key=lambda x: (x[1], x[0])):
@@ -355,7 +357,6 @@ class Project(SitemapMixin, TwoFactorRequireable, HasEvents, db.Model):
 
 
 class DependencyKind(enum.IntEnum):
-
     requires = 1
     provides = 2
     obsoletes = 3
@@ -366,19 +367,18 @@ class DependencyKind(enum.IntEnum):
 
 
 class Dependency(db.Model):
-
     __tablename__ = "release_dependencies"
     __table_args__ = (
         Index("release_dependencies_release_kind_idx", "release_id", "kind"),
     )
     __repr__ = make_repr("release", "kind", "specifier")
 
-    release_id = Column(
+    release_id = mapped_column(
         ForeignKey("releases.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
     )
-    kind = Column(Integer)
-    specifier = Column(Text)
+    kind = mapped_column(Integer)
+    specifier = mapped_column(Text)
 
 
 def _dependency_relation(kind):
@@ -392,17 +392,15 @@ def _dependency_relation(kind):
 
 
 class Description(db.Model):
-
     __tablename__ = "release_descriptions"
 
-    content_type = Column(Text)
-    raw = Column(Text, nullable=False)
-    html = Column(Text, nullable=False)
-    rendered_by = Column(Text, nullable=False)
+    content_type = mapped_column(Text)
+    raw = mapped_column(Text, nullable=False)
+    html = mapped_column(Text, nullable=False)
+    rendered_by = mapped_column(Text, nullable=False)
 
 
 class ReleaseURL(db.Model):
-
     __tablename__ = "release_urls"
     __table_args__ = (
         UniqueConstraint("release_id", "name"),
@@ -413,18 +411,17 @@ class ReleaseURL(db.Model):
     )
     __repr__ = make_repr("name", "url")
 
-    release_id = Column(
+    release_id = mapped_column(
         ForeignKey("releases.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
-    name = Column(String(32), nullable=False)
-    url = Column(Text, nullable=False)
+    name = mapped_column(String(32), nullable=False)
+    url = mapped_column(Text, nullable=False)
 
 
 class Release(db.Model):
-
     __tablename__ = "releases"
 
     @declared_attr
@@ -441,30 +438,30 @@ class Release(db.Model):
     __parent__ = dotted_navigator("project")
     __name__ = dotted_navigator("version")
 
-    project_id = Column(
+    project_id = mapped_column(
         ForeignKey("projects.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
     )
-    version = Column(Text, nullable=False)
-    canonical_version = Column(Text, nullable=False)
-    is_prerelease = Column(Boolean, nullable=False, server_default=sql.false())
-    author = Column(Text)
-    author_email = Column(Text)
-    maintainer = Column(Text)
-    maintainer_email = Column(Text)
-    home_page = Column(Text)
-    license = Column(Text)
-    summary = Column(Text)
-    keywords = Column(Text)
-    platform = Column(Text)
-    download_url = Column(Text)
-    _pypi_ordering = Column(Integer)
-    requires_python = Column(Text)
-    created = Column(
+    version = mapped_column(Text, nullable=False)
+    canonical_version = mapped_column(Text, nullable=False)
+    is_prerelease = mapped_column(Boolean, nullable=False, server_default=sql.false())
+    author = mapped_column(Text)
+    author_email = mapped_column(Text)
+    maintainer = mapped_column(Text)
+    maintainer_email = mapped_column(Text)
+    home_page = mapped_column(Text)
+    license = mapped_column(Text)
+    summary = mapped_column(Text)
+    keywords = mapped_column(Text)
+    platform = mapped_column(Text)
+    download_url = mapped_column(Text)
+    _pypi_ordering = mapped_column(Integer)
+    requires_python = mapped_column(Text)
+    created = mapped_column(
         DateTime(timezone=False), nullable=False, server_default=sql.func.now()
     )
 
-    description_id = Column(
+    description_id = mapped_column(
         ForeignKey("release_descriptions.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -481,14 +478,14 @@ class Release(db.Model):
         ),
     )
 
-    yanked = Column(Boolean, nullable=False, server_default=sql.false())
+    yanked = mapped_column(Boolean, nullable=False, server_default=sql.false())
 
-    yanked_reason = Column(Text, nullable=False, server_default="")
+    yanked_reason = mapped_column(Text, nullable=False, server_default="")
 
     _classifiers = orm.relationship(
         Classifier,
         backref="project_releases",
-        secondary=lambda: release_classifiers,  # type: ignore
+        secondary="release_classifiers",
         order_by=Classifier.ordering,
         passive_deletes=True,
     )
@@ -497,7 +494,7 @@ class Release(db.Model):
     _project_urls = orm.relationship(
         ReleaseURL,
         backref="release",
-        collection_class=attribute_mapped_collection("name"),
+        collection_class=attribute_keyed_dict("name"),
         cascade="all, delete-orphan",
         order_by=lambda: ReleaseURL.name.asc(),
         passive_deletes=True,
@@ -505,7 +502,7 @@ class Release(db.Model):
     project_urls = association_proxy(
         "_project_urls",
         "url",
-        creator=lambda k, v: ReleaseURL(name=k, url=v),  # type: ignore
+        creator=lambda k, v: ReleaseURL(name=k, url=v),
     )
 
     files = orm.relationship(
@@ -552,13 +549,13 @@ class Release(db.Model):
     _requires_external = _dependency_relation(DependencyKind.requires_external)
     requires_external = association_proxy("_requires_external", "specifier")
 
-    uploader_id = Column(
+    uploader_id = mapped_column(
         ForeignKey("users.id", onupdate="CASCADE", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
     uploader = orm.relationship(User)
-    uploaded_via = Column(Text)
+    uploaded_via = mapped_column(Text)
 
     @property
     def urls(self):
@@ -586,8 +583,11 @@ class Release(db.Model):
     @staticmethod
     def get_user_name_and_repo_name(urls):
         for url in urls:
-            parsed = urlparse(url)
-            segments = parsed.path.strip("/").split("/")
+            try:
+                parsed = parse_url(url)
+            except LocationParseError:
+                continue
+            segments = parsed.path.strip("/").split("/") if parsed.path else []
             if parsed.netloc in {"github.com", "www.github.com"} and len(segments) >= 2:
                 user_name, repo_name = segments[:2]
                 if user_name in GITHUB_RESERVED_NAMES:
@@ -627,8 +627,7 @@ class Release(db.Model):
         )
 
 
-class File(db.Model):
-
+class File(HasEvents, db.Model):
     __tablename__ = "release_files"
 
     @declared_attr
@@ -647,15 +646,17 @@ class File(db.Model):
                 ),
             ),
             Index("release_files_release_id_idx", "release_id"),
+            Index("release_files_archived_idx", "archived"),
+            Index("release_files_cached_idx", "cached"),
         )
 
-    release_id = Column(
+    release_id = mapped_column(
         ForeignKey("releases.id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
     )
-    python_version = Column(Text)
-    requires_python = Column(Text)
-    packagetype = Column(
+    python_version = mapped_column(Text, nullable=False)
+    requires_python = mapped_column(Text)
+    packagetype = mapped_column(
         Enum(
             "bdist_dmg",
             "bdist_dumb",
@@ -665,31 +666,52 @@ class File(db.Model):
             "bdist_wheel",
             "bdist_wininst",
             "sdist",
-        )
+        ),
+        nullable=False,
     )
-    comment_text = Column(Text)
-    filename = Column(Text, unique=True)
-    path = Column(Text, unique=True, nullable=False)
-    size = Column(Integer)
-    has_signature = Column(Boolean)
-    md5_digest = Column(Text, unique=True, nullable=False)
-    sha256_digest = Column(CIText, unique=True, nullable=False)
-    blake2_256_digest = Column(CIText, unique=True, nullable=False)
-    upload_time = Column(DateTime(timezone=False), server_default=func.now())
-    uploaded_via = Column(Text)
+    comment_text = mapped_column(Text)
+    filename = mapped_column(Text, unique=True, nullable=False)
+    path = mapped_column(Text, unique=True, nullable=False)
+    size = mapped_column(Integer, nullable=False)
+    md5_digest = mapped_column(Text, unique=True, nullable=False)
+    sha256_digest = mapped_column(CITEXT, unique=True, nullable=False)
+    blake2_256_digest = mapped_column(CITEXT, unique=True, nullable=False)
+    upload_time = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), nullable=False
+    )
+    uploaded_via = mapped_column(Text)
+
+    # PEP 658
+    metadata_file_sha256_digest = mapped_column(CITEXT, nullable=True)
+    metadata_file_blake2_256_digest = mapped_column(CITEXT, nullable=True)
 
     # We need this column to allow us to handle the currently existing "double"
     # sdists that exist in our database. Eventually we should try to get rid
     # of all of them and then remove this column.
-    allow_multiple_sdist = Column(Boolean, nullable=False, server_default=sql.false())
+    allow_multiple_sdist = mapped_column(
+        Boolean, nullable=False, server_default=sql.false()
+    )
+
+    cached = mapped_column(
+        Boolean,
+        comment="If True, the object has been populated to our cache bucket.",
+        nullable=False,
+        server_default=sql.false(),
+    )
+    archived = mapped_column(
+        Boolean,
+        comment="If True, the object has been archived to our archival bucket.",
+        nullable=False,
+        server_default=sql.false(),
+    )
 
     @hybrid_property
-    def pgp_path(self):
-        return self.path + ".asc"
+    def metadata_path(self):
+        return self.path + ".metadata"
 
-    @pgp_path.expression  # type: ignore
-    def pgp_path(self):
-        return func.concat(self.path, ".asc")
+    @metadata_path.expression  # type: ignore
+    def metadata_path(self):
+        return func.concat(self.path, ".metadata")
 
     @validates("requires_python")
     def validates_requires_python(self, *args, **kwargs):
@@ -697,29 +719,32 @@ class File(db.Model):
 
 
 class Filename(db.ModelBase):
-
     __tablename__ = "file_registry"
 
-    id = Column(Integer, primary_key=True, nullable=False)
-    filename = Column(Text, unique=True, nullable=False)
+    id = mapped_column(Integer, primary_key=True, nullable=False)
+    filename = mapped_column(Text, unique=True, nullable=False)
 
 
-release_classifiers = Table(
-    "release_classifiers",
-    db.metadata,
-    Column(
-        "release_id",
+class ReleaseClassifiers(db.ModelBase):
+    __tablename__ = "release_classifiers"
+    __table_args__ = (
+        Index("rel_class_trove_id_idx", "trove_id"),
+        Index("rel_class_release_id_idx", "release_id"),
+    )
+
+    trove_id = mapped_column(
+        Integer,
+        ForeignKey("trove_classifiers.id"),
+        primary_key=True,
+    )
+    release_id = mapped_column(
+        UUID,
         ForeignKey("releases.id", onupdate="CASCADE", ondelete="CASCADE"),
-        nullable=False,
-    ),
-    Column("trove_id", Integer(), ForeignKey("trove_classifiers.id")),
-    Index("rel_class_trove_id_idx", "trove_id"),
-    Index("rel_class_release_id_idx", "release_id"),
-)
+        primary_key=True,
+    )
 
 
 class JournalEntry(db.ModelBase):
-
     __tablename__ = "journals"
 
     @declared_attr
@@ -732,25 +757,23 @@ class JournalEntry(db.ModelBase):
             Index("journals_submitted_date_id_idx", cls.submitted_date, cls.id),
         )
 
-    id = Column(Integer, primary_key=True, nullable=False)
-    name = Column(Text)
-    version = Column(Text)
-    action = Column(Text)
-    submitted_date = Column(
+    id = mapped_column(Integer, primary_key=True, nullable=False)
+    name = mapped_column(Text)
+    version = mapped_column(Text)
+    action = mapped_column(Text)
+    submitted_date = mapped_column(
         DateTime(timezone=False), nullable=False, server_default=sql.func.now()
     )
-    _submitted_by = Column(
+    _submitted_by = mapped_column(
         "submitted_by",
-        CIText,
+        CITEXT,
         ForeignKey("users.username", onupdate="CASCADE"),
         nullable=True,
     )
     submitted_by = orm.relationship(User, lazy="raise_on_sql")
-    submitted_from = Column(Text)
 
 
 class ProhibitedProjectName(db.Model):
-
     __tablename__ = "prohibited_project_names"
     __table_args__ = (
         CheckConstraint(
@@ -761,12 +784,12 @@ class ProhibitedProjectName(db.Model):
 
     __repr__ = make_repr("name")
 
-    created = Column(
+    created = mapped_column(
         DateTime(timezone=False), nullable=False, server_default=sql.func.now()
     )
-    name = Column(Text, unique=True, nullable=False)
-    _prohibited_by = Column(
+    name = mapped_column(Text, unique=True, nullable=False)
+    _prohibited_by = mapped_column(
         "prohibited_by", UUID(as_uuid=True), ForeignKey("users.id"), index=True
     )
     prohibited_by = orm.relationship(User)
-    comment = Column(Text, nullable=False, server_default="")
+    comment = mapped_column(Text, nullable=False, server_default="")

@@ -12,15 +12,19 @@
 
 import time
 
+from datetime import datetime
+
 from pydantic import BaseModel, StrictStr, ValidationError
+from pyramid.response import Response
 from pyramid.view import view_config
 from sqlalchemy import func
 
 from warehouse.admin.flags import AdminFlagValue
-from warehouse.email import send_pending_oidc_publisher_invalidated_email
+from warehouse.email import send_pending_trusted_publisher_invalidated_email
 from warehouse.events.tags import EventTag
 from warehouse.macaroons import caveats
 from warehouse.macaroons.interfaces import IMacaroonService
+from warehouse.oidc.errors import InvalidPublisherError
 from warehouse.oidc.interfaces import IOIDCPublisherService
 from warehouse.oidc.models import PendingOIDCPublisher
 from warehouse.packaging.interfaces import IProjectService
@@ -44,26 +48,42 @@ def _ratelimiters(request):
 
 
 @view_config(
-    route_name="oidc.mint_token",
-    require_methods=["POST"],
+    route_name="oidc.audience",
+    require_methods=["GET"],
     renderer="json",
     require_csrf=False,
     has_translations=False,
+)
+def oidc_audience(request):
+    if request.flags.disallow_oidc():
+        return Response(
+            status=403, json={"message": "Trusted publishing functionality not enabled"}
+        )
+
+    audience = request.registry.settings["warehouse.oidc.audience"]
+    return {"audience": audience}
+
+
+@view_config(
+    route_name="oidc.github.mint_token",
+    require_methods=["POST"],
+    renderer="json",
+    require_csrf=False,
+    has_translations=True,
 )
 def mint_token_from_oidc(request):
     def _invalid(errors):
         request.response.status = 422
         return {"message": "Token request failed", "errors": errors}
 
-    oidc_enabled = request.registry.settings[
-        "warehouse.oidc.enabled"
-    ] and not request.flags.enabled(AdminFlagValue.DISALLOW_OIDC)
-    if not oidc_enabled:
+    if request.flags.disallow_oidc(AdminFlagValue.DISALLOW_GITHUB_OIDC):
         return _invalid(
             errors=[
                 {
                     "code": "not-enabled",
-                    "description": "OIDC functionality not enabled",
+                    "description": (
+                        "GitHub-based trusted publishing functionality not enabled"
+                    ),
                 }
             ]
         )
@@ -87,8 +107,8 @@ def mint_token_from_oidc(request):
         )
 
     # First, try to find a pending publisher.
-    pending_publisher = oidc_service.find_publisher(claims, pending=True)
-    if pending_publisher is not None:
+    try:
+        pending_publisher = oidc_service.find_publisher(claims, pending=True)
         factory = ProjectFactory(request)
 
         # If the project already exists, this pending publisher is no longer
@@ -111,6 +131,7 @@ def mint_token_from_oidc(request):
         new_project = project_service.create_project(
             pending_publisher.project_name,
             pending_publisher.added_by,
+            request,
             ratelimited=False,
         )
         oidc_service.reify_pending_publisher(pending_publisher, new_project)
@@ -134,23 +155,28 @@ def mint_token_from_oidc(request):
             .all()
         )
         for stale_publisher in stale_pending_publishers:
-            send_pending_oidc_publisher_invalidated_email(
+            send_pending_trusted_publisher_invalidated_email(
                 request,
                 stale_publisher.added_by,
                 project_name=stale_publisher.project_name,
             )
             request.db.delete(stale_publisher)
+    except InvalidPublisherError:
+        # If the claim set isn't valid for a pending publisher, it's OK, we
+        # will try finding a regular publisher
+        pass
 
     # We either don't have a pending OIDC publisher, or we *did*
     # have one and we've just converted it. Either way, look for a full publisher
     # to actually do the macaroon minting with.
-    publisher = oidc_service.find_publisher(claims, pending=False)
-    if not publisher:
+    try:
+        publisher = oidc_service.find_publisher(claims, pending=False)
+    except InvalidPublisherError as e:
         return _invalid(
             errors=[
                 {
                     "code": "invalid-publisher",
-                    "description": "valid token, but no corresponding publisher",
+                    "description": f"valid token, but no corresponding publisher ({e})",
                 }
             ]
         )
@@ -164,22 +190,28 @@ def mint_token_from_oidc(request):
     expires_at = not_before + 900
     serialized, dm = macaroon_service.create_macaroon(
         request.domain,
-        f"OpenID token: {publisher.publisher_url} ({not_before})",
+        (
+            f"OpenID token: {str(publisher)} "
+            f"({datetime.fromtimestamp(not_before).isoformat()})"
+        ),
         [
-            caveats.OIDCPublisher(oidc_publisher_id=str(publisher.id)),
+            caveats.OIDCPublisher(
+                oidc_publisher_id=str(publisher.id),
+            ),
             caveats.ProjectID(project_ids=[str(p.id) for p in publisher.projects]),
             caveats.Expiration(expires_at=expires_at, not_before=not_before),
         ],
         oidc_publisher_id=publisher.id,
+        additional={"oidc": {"ref": claims.get("ref"), "sha": claims.get("sha")}},
     )
     for project in publisher.projects:
         project.record_event(
             tag=EventTag.Project.ShortLivedAPITokenAdded,
-            ip_address=request.remote_addr,
+            request=request,
             additional={
                 "expires": expires_at,
                 "publisher_name": publisher.publisher_name,
-                "publisher_url": publisher.publisher_url,
+                "publisher_url": publisher.publisher_url(),
             },
         )
     return {"success": True, "token": serialized}

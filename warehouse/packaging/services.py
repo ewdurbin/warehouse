@@ -11,11 +11,15 @@
 # limitations under the License.
 
 import collections
+import hashlib
+import io
+import json
 import logging
 import os.path
 import shutil
 import warnings
 
+import b2sdk
 import botocore.exceptions
 import google.api_core.exceptions
 import google.api_core.retry
@@ -64,12 +68,23 @@ class GenericLocalBlobStorage:
     def get(self, path):
         return open(os.path.join(self.base, path), "rb")
 
+    def get_metadata(self, path):
+        return json.loads(open(os.path.join(self.base, path + ".meta")).read())
+
+    def get_checksum(self, path):
+        return hashlib.md5(
+            open(os.path.join(self.base, path), "rb").read(), usedforsecurity=False
+        ).hexdigest()
+
     def store(self, path, file_path, *, meta=None):
         destination = os.path.join(self.base, path)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         with open(destination, "wb") as dest_fp:
             with open(file_path, "rb") as src_fp:
                 dest_fp.write(src_fp.read())
+        if meta is not None:
+            with open(destination + ".meta", "w") as dest_fp:
+                dest_fp.write(json.dumps(meta))
 
 
 @implementer(IFileStorage)
@@ -77,6 +92,13 @@ class LocalFileStorage(GenericLocalBlobStorage):
     @classmethod
     def create_service(cls, context, request):
         return cls(request.registry.settings["files.path"])
+
+
+@implementer(IFileStorage)
+class LocalArchiveFileStorage(GenericLocalBlobStorage):
+    @classmethod
+    def create_service(cls, context, request):
+        return cls(request.registry.settings["archive_files.path"])
 
 
 @implementer(ISimpleStorage)
@@ -129,15 +151,81 @@ class GenericBlobStorage:
         return path
 
 
+class GenericB2BlobStorage(GenericBlobStorage):
+    def get(self, path):
+        path = self._get_path(path)
+        try:
+            file_obj = io.BytesIO()
+            downloaded_file = self.bucket.download_file_by_name(path)
+            downloaded_file.save(file_obj)
+            file_obj.seek(0)
+            return file_obj
+        except b2sdk.v2.exception.FileNotPresent:
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def get_metadata(self, path):
+        path = self._get_path(path)
+        try:
+            return self.bucket.get_file_info_by_name(path).file_info
+        except b2sdk.v2.exception.FileNotPresent:
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def get_checksum(self, path):
+        path = self._get_path(path)
+        try:
+            return self.bucket.get_file_info_by_id(
+                self.bucket.get_file_info_by_name(path).id_
+            ).content_md5
+        except b2sdk.v2.exception.FileNotPresent:
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def store(self, path, file_path, *, meta=None):
+        path = self._get_path(path)
+        self.bucket.upload_local_file(
+            local_file=file_path,
+            file_name=path,
+            file_infos=meta,
+        )
+
+
+@implementer(IFileStorage)
+class B2FileStorage(GenericB2BlobStorage):
+    @classmethod
+    def create_service(cls, context, request):
+        b2_api = request.find_service(name="b2.api")
+        bucket = b2_api.get_bucket_by_name(request.registry.settings["files.bucket"])
+        prefix = request.registry.settings.get("files.prefix")
+        return cls(bucket, prefix=prefix)
+
+
 class GenericS3BlobStorage(GenericBlobStorage):
     def get(self, path):
-        # Note: this is not actually used in production, instead our CDN is
+        # Note: this is not actually used to serve files, instead our CDN is
         # configured to connect directly to our storage bucket. See:
         # https://github.com/python/pypi-infra/blob/master/terraform/file-hosting/vcl/main.vcl
         try:
             return self.bucket.Object(self._get_path(path)).get()["Body"]
         except botocore.exceptions.ClientError as exc:
             if exc.response["Error"]["Code"] != "NoSuchKey":
+                raise
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def get_metadata(self, path):
+        try:
+            return self.bucket.Object(self._get_path(path)).metadata
+        except botocore.exceptions.ClientError as exc:
+            if exc.response["Error"]["Code"] != "NoSuchKey":
+                raise
+            raise FileNotFoundError(f"No such key: {path!r}") from None
+
+    def get_checksum(self, path):
+        try:
+            return (
+                self.bucket.Object(self._get_path(path)).e_tag.rstrip('"').lstrip('"')
+            )
+        except botocore.exceptions.ClientError as exc:
+            if exc.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
+                #  https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html#API_HeadObject_RequestBody
                 raise
             raise FileNotFoundError(f"No such key: {path!r}") from None
 
@@ -159,6 +247,17 @@ class S3FileStorage(GenericS3BlobStorage):
         s3 = session.resource("s3")
         bucket = s3.Bucket(request.registry.settings["files.bucket"])
         prefix = request.registry.settings.get("files.prefix")
+        return cls(bucket, prefix=prefix)
+
+
+@implementer(IFileStorage)
+class S3ArchiveFileStorage(GenericS3BlobStorage):
+    @classmethod
+    def create_service(cls, context, request):
+        session = request.find_service(name="aws.session")
+        s3 = session.resource("s3")
+        bucket = s3.Bucket(request.registry.settings["archive_files.bucket"])
+        prefix = request.registry.settings.get("archive_files.prefix")
         return cls(bucket, prefix=prefix)
 
 
@@ -197,9 +296,15 @@ class S3DocsStorage:
 
 class GenericGCSBlobStorage(GenericBlobStorage):
     def get(self, path):
-        # Note: this is not actually used in production, instead our CDN is
+        # Note: this is not actually used in to serve files, instead our CDN is
         # configured to connect directly to our storage bucket. See:
         # https://github.com/python/pypi-infra/blob/master/terraform/file-hosting/vcl/main.vcl
+        raise NotImplementedError
+
+    def get_metadata(self, path):
+        raise NotImplementedError
+
+    def get_checksum(self, path):
         raise NotImplementedError
 
     @google.api_core.retry.Retry(
@@ -266,20 +371,18 @@ class GCSSimpleStorage(GenericGCSBlobStorage):
 
 @implementer(IProjectService)
 class ProjectService:
-    def __init__(self, session, remote_addr, metrics=None, ratelimiters=None) -> None:
+    def __init__(self, session, metrics=None, ratelimiters=None) -> None:
         if ratelimiters is None:
             ratelimiters = {}
 
         self.db = session
-        self.remote_addr = remote_addr
         self.ratelimiters = collections.defaultdict(DummyRateLimiter, ratelimiters)
         self._metrics = metrics
 
-    def _check_ratelimits(self, creator):
+    def _check_ratelimits(self, request, creator):
         # First we want to check if a single IP is exceeding our rate limiter.
-        print(self.ratelimiters)
-        if self.remote_addr is not None:
-            if not self.ratelimiters["project.create.ip"].test(self.remote_addr):
+        if request.remote_addr is not None:
+            if not self.ratelimiters["project.create.ip"].test(request.remote_addr):
                 logger.warning("IP failed project create threshold reached.")
                 self._metrics.increment(
                     "warehouse.project.create.ratelimited",
@@ -287,7 +390,7 @@ class ProjectService:
                 )
                 raise TooManyProjectsCreated(
                     resets_in=self.ratelimiters["project.create.ip"].resets_in(
-                        self.remote_addr
+                        request.remote_addr
                     )
                 )
 
@@ -299,17 +402,19 @@ class ProjectService:
             )
             raise TooManyProjectsCreated(
                 resets_in=self.ratelimiters["project.create.user"].resets_in(
-                    self.remote_addr
+                    request.remote_addr
                 )
             )
 
-    def _hit_ratelimits(self, creator):
+    def _hit_ratelimits(self, request, creator):
         self.ratelimiters["project.create.user"].hit(creator.id)
-        self.ratelimiters["project.create.ip"].hit(self.remote_addr)
+        self.ratelimiters["project.create.ip"].hit(request.remote_addr)
 
-    def create_project(self, name, creator, *, creator_is_owner=True, ratelimited=True):
+    def create_project(
+        self, name, creator, request, *, creator_is_owner=True, ratelimited=True
+    ):
         if ratelimited:
-            self._check_ratelimits(creator)
+            self._check_ratelimits(request, creator)
 
         project = Project(name=name)
         self.db.add(project)
@@ -322,12 +427,11 @@ class ProjectService:
                 name=project.name,
                 action="create",
                 submitted_by=creator,
-                submitted_from=self.remote_addr,
             )
         )
         project.record_event(
             tag=EventTag.Project.ProjectCreate,
-            ip_address=self.remote_addr,
+            request=request,
             additional={"created_by": creator.username},
         )
 
@@ -342,12 +446,11 @@ class ProjectService:
                     name=project.name,
                     action=f"add Owner {creator.username}",
                     submitted_by=creator,
-                    submitted_from=self.remote_addr,
                 )
             )
             project.record_event(
                 tag=EventTag.Project.RoleAdd,
-                ip_address=self.remote_addr,
+                request=request,
                 additional={
                     "submitted_by": creator.username,
                     "role_name": "Owner",
@@ -356,7 +459,7 @@ class ProjectService:
             )
 
         if ratelimited:
-            self._hit_ratelimits(creator)
+            self._hit_ratelimits(request, creator)
         return project
 
 
@@ -370,6 +473,4 @@ def project_service_factory(context, request):
             IRateLimiter, name="project.create.ip", context=None
         ),
     }
-    return ProjectService(
-        request.db, request.remote_addr, metrics=metrics, ratelimiters=ratelimiters
-    )
+    return ProjectService(request.db, metrics=metrics, ratelimiters=ratelimiters)

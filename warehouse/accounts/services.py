@@ -20,12 +20,13 @@ import os
 import secrets
 import urllib.parse
 
+import passlib.exc
 import requests
 
 from passlib.context import CryptContext
+from sqlalchemy import exists, select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import joinedload
-from sqlalchemy.sql import exists
 from webauthn.helpers import bytes_to_base64url
 from zope.interface import implementer
 
@@ -99,9 +100,11 @@ class DatabaseUserService:
         #       object here.
         # TODO: We need some sort of Anonymous User.
         return (
-            self.db.query(User).options(joinedload(User.webauthn)).get(userid)
-            if userid
-            else None
+            self.db.scalars(
+                select(User).options(joinedload(User.webauthn)).where(User.id == userid)
+            )
+            .unique()
+            .one_or_none()
         )
 
     def get_user(self, userid):
@@ -118,8 +121,24 @@ class DatabaseUserService:
         return None if user_id is None else self.get_user(user_id)
 
     @functools.lru_cache
-    def get_admins(self):
-        return self.db.query(User).filter(User.is_superuser.is_(True)).all()
+    def get_users_by_prefix(self, prefix: str) -> list[User]:
+        """
+        Get the first 10 matches by username prefix.
+        No need to apply `ILIKE` here, as the `username` column is already
+        `CIText`.
+        """
+        return (
+            self.db.query(User)
+            .filter(User.username.startswith(prefix))
+            .order_by(User.username)
+            .limit(10)
+            .all()
+        )
+
+    @functools.lru_cache
+    def get_admin_user(self):
+        """Useful for notifications to the admin@ email address."""
+        return self.get_user_by_username("admin")
 
     def username_is_prohibited(self, username):
         return self.db.query(
@@ -205,7 +224,10 @@ class DatabaseUserService:
 
             # Actually check our hash, optionally getting a new hash for it if
             # we should upgrade our saved hashed.
-            ok, new_hash = self.hasher.verify_and_update(password, user.password)
+            try:
+                ok, new_hash = self.hasher.verify_and_update(password, user.password)
+            except passlib.exc.PasswordValueError:
+                ok = False
 
             # First, check to see if the password that we were given was OK.
             if ok:
@@ -297,13 +319,13 @@ class DatabaseUserService:
 
         return user
 
-    def disable_password(self, user_id, reason=None, ip_address="127.0.0.1"):
+    def disable_password(self, user_id, request, reason=None):
         user = self.get_user(user_id)
         user.password = self.hasher.disable()
         user.disabled_for = reason
         user.record_event(
             tag=EventTag.Account.PasswordDisabled,
-            ip_address=ip_address,
+            request=request,
             additional={"reason": reason.value if reason else None},
         )
 
@@ -565,18 +587,6 @@ class DatabaseUserService:
             None,
         )
 
-    def record_event(self, user_id, *, tag, additional=None):
-        """
-        Creates a new UserEvent for the given user with the given
-        tag, IP address, and additional metadata.
-
-        Returns the event.
-        """
-        user = self.get_user(user_id)
-        return user.record_event(
-            tag=tag, ip_address=self.remote_addr, additional=additional
-        )
-
     def generate_recovery_codes(self, user_id):
         user = self.get_user(user_id)
 
@@ -588,8 +598,6 @@ class DatabaseUserService:
         ]
         for recovery_code in recovery_codes:
             self.db.add(RecoveryCode(user=user, code=self.hasher.hash(recovery_code)))
-
-        self.db.flush()
 
         return recovery_codes
 
@@ -613,7 +621,6 @@ class DatabaseUserService:
 
         # The code is valid and not burned. Mark it as burned
         stored_recovery_code.burned = datetime.datetime.now()
-        self.db.flush()
         self._metrics.increment("warehouse.authentication.recovery_code.ok")
         return True
 
@@ -645,6 +652,20 @@ class TokenService:
             raise TokenInvalid
 
         return data
+
+    def unsafe_load_payload(self, token):
+        """
+        ¡DANGER!
+
+        This method does not validate expiration whatsoever!
+        It can *and should* only be used for inspecting an expired token then
+        doing nothing with it whatsoever.
+        """
+        signature_valid, data = self.serializer.loads_unsafe(token)
+
+        if signature_valid:
+            return data
+        return None
 
 
 def database_login_factory(context, request):
@@ -696,7 +717,6 @@ class TokenServiceFactory:
 
 @implementer(IPasswordBreachedService)
 class HaveIBeenPwnedPasswordBreachedService:
-
     _failure_message_preamble = (
         "This password appears in a security breach or has been "
         "compromised and cannot be used."
@@ -758,7 +778,11 @@ class HaveIBeenPwnedPasswordBreachedService:
         self._metrics_increment("warehouse.compromised_password_check.start", tags=tags)
 
         # To work with the HIBP API, we need the sha1 of the UTF8 encoded password.
-        hashed_password = hashlib.sha1(password.encode("utf8")).hexdigest().lower()
+        hashed_password = (
+            hashlib.sha1(password.encode("utf8"), usedforsecurity=False)
+            .hexdigest()
+            .lower()
+        )
 
         # Fetch the passwords from the HIBP data set.
         try:
@@ -848,6 +872,7 @@ class HaveIBeenPwnedEmailBreachedService:
             resp = self._http.get(
                 urllib.parse.urljoin(self._api_base, email),
                 headers={"User-Agent": "PyPI.org", "hibp-api-key": self.api_key},
+                timeout=(0.25, 0.25),
             )
             resp.raise_for_status()
         except requests.RequestException as exc:

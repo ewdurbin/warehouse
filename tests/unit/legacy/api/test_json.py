@@ -195,7 +195,6 @@ class TestJSONProject:
                 filename=f"{project.name}-{r.version}.tar.gz",
                 python_version="source",
                 size=200,
-                has_signature=True,
             )
             for r in releases[1:]
         ]
@@ -258,14 +257,14 @@ class TestJSONProject:
                         "comment_text": None,
                         "downloads": -1,
                         "filename": files[0].filename,
-                        "has_sig": True,
+                        "has_sig": False,
                         "md5_digest": files[0].md5_digest,
                         "digests": {
                             "md5": files[0].md5_digest,
                             "sha256": files[0].sha256_digest,
                             "blake2b_256": files[0].blake2_256_digest,
                         },
-                        "packagetype": None,
+                        "packagetype": files[0].packagetype,
                         "python_version": "source",
                         "size": 200,
                         "upload_time": files[0].upload_time.strftime(
@@ -283,14 +282,14 @@ class TestJSONProject:
                         "comment_text": None,
                         "downloads": -1,
                         "filename": files[1].filename,
-                        "has_sig": True,
+                        "has_sig": False,
                         "md5_digest": files[1].md5_digest,
                         "digests": {
                             "md5": files[1].md5_digest,
                             "sha256": files[1].sha256_digest,
                             "blake2b_256": files[1].blake2_256_digest,
                         },
-                        "packagetype": None,
+                        "packagetype": files[1].packagetype,
                         "python_version": "source",
                         "size": 200,
                         "upload_time": files[1].upload_time.strftime(
@@ -308,14 +307,14 @@ class TestJSONProject:
                         "comment_text": None,
                         "downloads": -1,
                         "filename": files[2].filename,
-                        "has_sig": True,
+                        "has_sig": False,
                         "md5_digest": files[2].md5_digest,
                         "digests": {
                             "blake2b_256": files[2].blake2_256_digest,
                             "md5": files[2].md5_digest,
                             "sha256": files[2].sha256_digest,
                         },
-                        "packagetype": None,
+                        "packagetype": files[2].packagetype,
                         "python_version": "source",
                         "size": 200,
                         "upload_time": files[2].upload_time.strftime(
@@ -334,14 +333,14 @@ class TestJSONProject:
                     "comment_text": None,
                     "downloads": -1,
                     "filename": files[2].filename,
-                    "has_sig": True,
+                    "has_sig": False,
                     "md5_digest": files[2].md5_digest,
                     "digests": {
                         "md5": files[2].md5_digest,
                         "sha256": files[2].sha256_digest,
                         "blake2b_256": files[2].blake2_256_digest,
                     },
-                    "packagetype": None,
+                    "packagetype": files[2].packagetype,
                     "python_version": "source",
                     "size": 200,
                     "upload_time": files[2].upload_time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -503,7 +502,6 @@ class TestJSONRelease:
                 filename=f"{project.name}-{r.version}.tar.gz",
                 python_version="source",
                 size=200,
-                has_signature=True,
             )
             for r in releases[1:]
         ]
@@ -565,14 +563,14 @@ class TestJSONRelease:
                     "comment_text": None,
                     "downloads": -1,
                     "filename": files[-1].filename,
-                    "has_sig": True,
+                    "has_sig": False,
                     "md5_digest": files[-1].md5_digest,
                     "digests": {
                         "md5": files[-1].md5_digest,
                         "sha256": files[-1].sha256_digest,
                         "blake2b_256": files[-1].blake2_256_digest,
                     },
-                    "packagetype": None,
+                    "packagetype": files[-1].packagetype,
                     "python_version": "source",
                     "size": 200,
                     "upload_time": files[-1].upload_time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -595,7 +593,6 @@ class TestJSONRelease:
             filename=f"{project.name}-{release.version}.tar.gz",
             python_version="source",
             size=200,
-            has_signature=True,
         )
 
         user = UserFactory.create()
@@ -656,14 +653,14 @@ class TestJSONRelease:
                     "comment_text": None,
                     "downloads": -1,
                     "filename": file.filename,
-                    "has_sig": True,
+                    "has_sig": False,
                     "md5_digest": file.md5_digest,
                     "digests": {
                         "md5": file.md5_digest,
                         "sha256": file.sha256_digest,
                         "blake2b_256": file.blake2_256_digest,
                     },
-                    "packagetype": None,
+                    "packagetype": file.packagetype,
                     "python_version": "source",
                     "size": 200,
                     "upload_time": file.upload_time.strftime("%Y-%m-%dT%H:%M:%S"),
