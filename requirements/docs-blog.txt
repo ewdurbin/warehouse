@@ -271,9 +271,9 @@ mergedeep==1.3.4 \
     --hash=sha256:0096d52e9dad9939c3d975a774666af186eda617e6ca84df4c94dec30004f2a8 \
     --hash=sha256:70775750742b25c0d8f36c55aed03d24c3384d17c951b3175d898bd778ef0307
     # via mkdocs
-mkdocs==1.5.2 \
-    --hash=sha256:60a62538519c2e96fe8426654a67ee177350451616118a41596ae7c876bb7eac \
-    --hash=sha256:70d0da09c26cff288852471be03c23f0f521fc15cf16ac89c7a3bfb9ae8d24f9
+mkdocs==1.5.3 \
+    --hash=sha256:3b3a78e736b31158d64dbb2f8ba29bd46a379d0c6e324c2246c3bc3d2189cfc1 \
+    --hash=sha256:eb7c99214dcb945313ba30426c2451b735992c73c2e10838f76d09e39ff4d0e2
     # via
     #   -r requirements/docs-blog.in
     #   mkdocs-blogging-plugin
@@ -283,13 +283,13 @@ mkdocs-blogging-plugin==2.2.11 \
     --hash=sha256:7e0f14e5a5d9d7fa106ee014b04a49e2fdb5ffe70a0026106dceb79930ba8ac2 \
     --hash=sha256:91b3ebc1ee3870958a0f9304d985f73a8e170a1f8d17948488415fa1a4257b2e
     # via -r requirements/docs-blog.in
-mkdocs-material==9.2.8 \
-    --hash=sha256:6bc8524f8047a4f060d6ab0925b9d7cb61b3b5e6d5ca8a8e8085f8bfdeca1b71 \
-    --hash=sha256:ec839dc5eaf42d8525acd1d6420fd0a0583671a4f98a9b3ff7897ae8628dbc2d
+mkdocs-material==9.4.7 \
+    --hash=sha256:4d698d52bb6a6a3c452ab854481c4cdb68453a0420956a6aee2de55fe15fe610 \
+    --hash=sha256:e704e001c9ef17291e1d3462c202425217601653e18f68f85d28eff4690e662b
     # via -r requirements/docs-blog.in
-mkdocs-material-extensions==1.1.1 \
-    --hash=sha256:9c003da71e2cc2493d910237448c672e00cefc800d3d6ae93d2fc69979e3bd93 \
-    --hash=sha256:e41d9f38e4798b6617ad98ca8f7f1157b1e4385ac1459ca1e4ea219b556df945
+mkdocs-material-extensions==1.3 \
+    --hash=sha256:0297cc48ba68a9fdd1ef3780a3b41b534b0d0df1d1181a44676fda5f464eeadc \
+    --hash=sha256:f0446091503acb110a7cab9349cbc90eeac51b58d1caa92a704a81ca1e24ddbd
     # via mkdocs-material
 mkdocs-rss-plugin==1.8.0 \
     --hash=sha256:0fa13c99730c1d3ad9ec05102ff3d148c9849396c40b30be789339d38722fa8f \
