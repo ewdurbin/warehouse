@@ -26,28 +26,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Cache RUN --mount=type=cache /var/cache/apt
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: var-cache-apt
           key: var-cache-apt-${{ hashFiles('Dockerfile') }}
           restore-keys: |
             var-cache-apt-
       - name: Cache RUN --mount=type=cache /var/lib/apt
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: var-lib-apt
           key: var-lib-apt-${{ hashFiles('Dockerfile') }}
           restore-keys: |
             var-lib-apt-
       - name: Cache RUN --mount=type=cache /root/.cache/pip
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: root-cache-pip
           key: root-cache-pip-${{ hashFiles('requirements/*.txt') }}
           restore-keys: |
             root-cache-pip-
       - name: Cache RUN --mount=type=cache /root/.npm
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: root-npm
           key: root-npm-${{ hashFiles('package.json', 'package-lock.json') }}
