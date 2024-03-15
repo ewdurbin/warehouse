@@ -220,7 +220,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     set -x \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
-        libpq5 libxml2 libxslt1.1 libcurl4 \
+        libpq5 libxml2 libxslt1.1 libcurl4  \
         $(if [ "$DEVEL" = "yes" ]; then echo 'bash libjpeg62 postgresql-client build-essential libffi-dev libxml2-dev libxslt-dev libpq-dev libcurl4-openssl-dev libssl-dev vim'; fi) \
         $(if [ "$CI" = "yes" ]; then echo 'git'; fi) \
     && apt-get clean \
