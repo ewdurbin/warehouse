@@ -83,7 +83,7 @@ ddtrace==2.7.0 \
     --hash=sha256:ec6c102bd44f76ca06195c7e3c028165fc579fddb28b27951c1efff42b5e3452 \
     --hash=sha256:ef2a2d068e99f0e3f0a604553c7861d5c36bba7ae92ec5af4a74547fc2be1a9b \
     --hash=sha256:f9533332fe12f331333cc652dacf107329a9af0f328539d4cbea578b4a999331
-    # via -r requirements/deploy.in
+    # via -r deploy.in
 deprecated==1.2.14 \
     --hash=sha256:6fac8b097794a90302bdbb17b9b815e732d3c4720583ff1b198499d78470466c \
     --hash=sha256:e5323eb936458dccc2582dc6f9c322c852a775a27065ff2b0c4970b9d53d01b3
@@ -92,10 +92,10 @@ envier==0.5.1 \
     --hash=sha256:b45ef6051fea33d0c32a64e186bff2cfb446e2242d6781216c9bc9ce708c5909 \
     --hash=sha256:bd5ccf707447973ea0f4125b7df202ba415ad888bcdcb8df80e0b002ee11ffdb
     # via ddtrace
-gunicorn==21.2.0 \
-    --hash=sha256:3213aa5e8c24949e792bcacfc176fef362e7aac80b76c56f6b5122bf350722f0 \
-    --hash=sha256:88ec8bff1d634f98e61b9f65bc4bf3cd918a90806c6f5c48bc5603849ec81033
-    # via -r requirements/deploy.in
+gunicorn==22.0.0 \
+    --hash=sha256:350679f91b24062c86e386e198a15438d53a7a8207235a78ba1b53df4c4378d9 \
+    --hash=sha256:4a0b436239ff76fb33f11c07a16482c521a7e09c1ce3cc293c2330afe01bec63
+    # via -r deploy.in
 importlib-metadata==6.11.0 \
     --hash=sha256:1231cf92d825c9e03cfc4da076a16de6422c863558229ea0b22b675657463443 \
     --hash=sha256:f0afba6205ad8f8947c7d338b5342d5db2afbfd82f9cbef7879a9539cc12eb9b
