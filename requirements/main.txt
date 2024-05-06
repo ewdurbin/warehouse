@@ -67,9 +67,9 @@ b2sdk==1.32.0 \
     --hash=sha256:46321bccdd9a295af52cb05d98b5df9771bddf8dcdf68afe3a9fdf7dda156b32 \
     --hash=sha256:84b6f7f01b6fc74f982944d40260df695f1fdeae9fcee0b49afd053a7ad75501
     # via -r requirements/main.in
-babel==2.14.0 \
-    --hash=sha256:6919867db036398ba21eb5c7a0f6b28ab8cbc3ae7a73a44ebe34ae74a4e7d363 \
-    --hash=sha256:efb1a25b7118e67ce3a259bed20545c29cb68be8ad2c784c83689981b7a57287
+babel==2.15.0 \
+    --hash=sha256:08706bdad8d0a3413266ab61bd6c34d0c28d6e1e7badf40a2cebe67644e2e1fb \
+    --hash=sha256:8daf0e265d05768bc6c7a314cf1321e9a123afc328cc635c18622a2f30a04413
     # via -r requirements/main.in
 bcrypt==4.1.2 \
     --hash=sha256:02d9ef8915f72dd6daaef40e0baeef8a017ce624369f09754baf32bb32dba25f \
