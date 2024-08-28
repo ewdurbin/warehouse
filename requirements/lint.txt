@@ -394,9 +394,9 @@ types-requests==2.32.0.20240622 \
     --hash=sha256:97bac6b54b5bd4cf91d407e62f0932a74821bc2211f22116d9ee1dd643826caf \
     --hash=sha256:ed5e8a412fcc39159d6319385c009d642845f250c63902718f605cd90faade31
     # via -r requirements/lint.in
-types-s3transfer==0.10.1 \
-    --hash=sha256:02154cce46528287ad76ad1a0153840e0492239a0887e8833466eccf84b98da0 \
-    --hash=sha256:49a7c81fa609ac1532f8de3756e64b58afcecad8767933310228002ec7adff74
+types-s3transfer==0.10.2 \
+    --hash=sha256:60167a3bfb5c536ec6cdb5818f7f9a28edca9dc3e0b5ff85ae374526fc5e576e \
+    --hash=sha256:7a3fec8cd632e2b5efb665a355ef93c2a87fdd5a45b74a949f95a9e628a86356
     # via boto3-stubs
 types-setuptools==70.2.0.20240704 \
     --hash=sha256:2f8d28d16ca1607080f9fdf19595bd49c942884b2bbd6529c9b8a9a8fc8db911 \
