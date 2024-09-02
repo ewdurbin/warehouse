@@ -2202,9 +2202,9 @@ zxcvbn==4.4.28 \
     # via -r requirements/main.in
 
 # The following packages are considered to be unsafe in a requirements file:
-setuptools==70.2.0 \
-    --hash=sha256:b8b8060bb426838fbe942479c90296ce976249451118ef566a5a0b7d8b78fb05 \
-    --hash=sha256:bd63e505105011b25c3c11f753f7e3b8465ea739efddaccef8f0efac2137bac1
+setuptools==74.1.0 \
+    --hash=sha256:bea195a800f510ba3a2bc65645c88b7e016fe36709fefc58a880c4ae8a0138d7 \
+    --hash=sha256:cee604bd76cc092355a4e43ec17aee5369095974f41f088676724dc6bc2c9ef8
     # via
     #   -r requirements/main.in
     #   pyramid
