@@ -185,18 +185,21 @@ returns `True`, so it never affects which route matches. It exists purely so the
 security policies can read it back off `request.matched_route.predicates` via
 `auth_methods_for_route(route)`. A route opts in by passing `auth_methods` to
 `add_route` or `add_legacy_action_route`. The forklift upload, for example,
-accepts basic-auth (for the `__token__` pass-through) and macaroons:
+accepts basic-auth (for the `__token__` pass-through) and macaroons, and declares
+support for the upcoming JWT-backed `api-key` method:
 
 ```python
 config.add_legacy_action_route(
     "forklift.legacy.file_upload",
     "file_upload",
-    auth_methods={"basic-auth", "macaroon"},
+    auth_methods={"basic-auth", "macaroon", "api-key"},
     domain=forklift,
 )
 ```
 
-A token-only API route passes `auth_methods={"macaroon"}` instead.
+The danger-API routes pass `auth_methods={"macaroon", "api-key"}` instead.
+No security policy implements `api-key` yet: these declarations prepare the
+route boundary but do not enable JWT authentication on their own.
 Listing `basic-auth` without `macaroon` raises a `ConfigurationError`, since
 the only credential basic-auth lets through is a macaroon.
 
@@ -206,8 +209,8 @@ method is not in the route's allowed set:
 | Route declares | Session engages? | BasicAuth engages? | Macaroon engages? |
 |----------------|------------------|--------------------|-------------------|
 | *(no `auth_methods`)* | yes | no (needs explicit opt-in) | yes |
-| `{"basic-auth", "macaroon"}` (forklift upload) | no | yes | yes |
-| `{"macaroon"}` (token-only API) | no | no | yes |
+| `{"basic-auth", "macaroon", "api-key"}` (forklift upload) | no | yes | yes |
+| `{"macaroon", "api-key"}` (danger API) | no | no | yes |
 | `{"api-key"}` (future Maintainer API) | no | no | no |
 
 `auth_methods_for_route` returns `None` when a route carries no predicate, and
@@ -396,10 +399,10 @@ The macaroon path has its own front gate,
 
 ```python
 PERMISSION_AUTH_METHODS = {
-    Permissions.ProjectsUpload: frozenset({MACAROON, BASIC_AUTH}),
-    # legacy API permissions, slated for removal
-    Permissions.APIEcho: frozenset({MACAROON}),
-    Permissions.APIObservationsAdd: frozenset({MACAROON}),
+    Permissions.ProjectsUpload: frozenset({MACAROON, BASIC_AUTH, API_KEY}),
+    # Legacy macaroon support for API permissions is slated for removal.
+    Permissions.APIEcho: frozenset({MACAROON, API_KEY}),
+    Permissions.APIObservationsAdd: frozenset({MACAROON, API_KEY}),
 }
 ```
 
@@ -452,7 +455,7 @@ sequenceDiagram
     participant DB as Database
 
     T->>R: POST upload (Basic __token__:pypi-AgE...)
-    R->>R: route match (forklift.legacy.file_upload,<br/>auth_methods = basic-auth, macaroon)
+    R->>R: route match (forklift.legacy.file_upload,<br/>auth_methods = basic-auth, macaroon, api-key)
     R->>M: permits(request, context, ProjectsUpload)
     M->>BA: identity(request)
     BA-->>M: None (username is __token__, passes through)
