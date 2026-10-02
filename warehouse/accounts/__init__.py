@@ -10,6 +10,7 @@ from warehouse.accounts.interfaces import (
     ITokenService,
     IUserService,
 )
+from warehouse.accounts.jwt import JWTSecurityPolicy
 from warehouse.accounts.oauth import (
     GitHubAppClient,
     GitLabOAuthClient,
@@ -38,6 +39,8 @@ from warehouse.accounts.tasks import (
     unverify_emails_with_expired_domains,
 )
 from warehouse.accounts.utils import UserContext
+from warehouse.api.interfaces import IJWTVerifier
+from warehouse.api.services import DisabledJWTVerifier
 from warehouse.macaroons.security_policy import MacaroonSecurityPolicy
 from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.utils.security_policy import MultiSecurityPolicy
@@ -89,6 +92,9 @@ def _unauthenticated_userid(request):
 def includeme(config):
     # Register our login service
     config.register_service_factory(database_login_factory, IUserService)
+
+    # JWT authentication remains disabled until a verifier is implemented.
+    config.register_service_factory(DisabledJWTVerifier.create_service, IJWTVerifier)
 
     # Register our token services
     config.register_service_factory(
@@ -170,6 +176,7 @@ def includeme(config):
                 SessionSecurityPolicy(),
                 BasicAuthSecurityPolicy(),
                 MacaroonSecurityPolicy(),
+                JWTSecurityPolicy(),
             ],
         )
     )

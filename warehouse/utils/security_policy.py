@@ -24,7 +24,7 @@ class AuthenticationMethod(enum.Enum):
     SESSION = "session"
     MACAROON = "macaroon"
     # JWT-backed API keys for uploads and the Maintainer API, distinct from
-    # macaroon API tokens. No policy implements this method yet.
+    # macaroon API tokens. The JWT verifier is disabled by default.
     API_KEY = "api-key"
 
 

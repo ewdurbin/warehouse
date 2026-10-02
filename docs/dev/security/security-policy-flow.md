@@ -16,6 +16,8 @@ or deny a request.
 - [`warehouse/accounts/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/security_policy.py): `SessionSecurityPolicy`, `BasicAuthSecurityPolicy`, and the session authorization gates (verified email, two-factor)
 - [`warehouse/accounts/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/utils.py): `UserContext`
 - [`warehouse/macaroons/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/macaroons/security_policy.py): `MacaroonSecurityPolicy` (API tokens and Trusted Publishing)
+- [`warehouse/accounts/jwt.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/jwt.py): `JWTSecurityPolicy` (JWT-backed API keys)
+- [`warehouse/api/interfaces.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/interfaces.py) and [`warehouse/api/services.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/services.py): the JWT verifier contract and its rejecting default implementation
 - [`warehouse/oidc/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/oidc/utils.py): `PublisherTokenContext`
 - [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): `AuthMethodsPredicate` and the `auth_methods_for_route` helper
 - [`warehouse/routes.py`](https://github.com/pypi/warehouse/blob/main/warehouse/routes.py) and [`warehouse/forklift/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/forklift/__init__.py): route declarations tagged with `auth_methods`
@@ -101,7 +103,7 @@ a template) by calling `security_policy.identity(request)`.
 
 Pyramid 2.x uses a single `ISecurityPolicy` object that answers both
 authentication (`identity`, `authenticated_userid`) and authorization
-(`permits`). Warehouse registers a `MultiSecurityPolicy` that wraps three
+(`permits`). Warehouse registers a `MultiSecurityPolicy` that wraps four
 concrete policies, tried in order:
 
 ```python
@@ -111,6 +113,7 @@ config.set_security_policy(
             SessionSecurityPolicy(),
             BasicAuthSecurityPolicy(),
             MacaroonSecurityPolicy(),
+            JWTSecurityPolicy(),
         ],
     )
 )
@@ -132,7 +135,9 @@ flowchart TD
     P2 -->|non-None| STORE
     P2 -->|None| P3[<code>MacaroonSecurityPolicy.identity</code>]:::warehouse
     P3 -->|non-None| STORE
-    P3 -->|None| NONE[Cache <code>None, None</code>]:::pyramid
+    P3 -->|None| P4[<code>JWTSecurityPolicy.identity</code>]:::warehouse
+    P4 -->|non-None| STORE
+    P4 -->|None| NONE[Cache <code>None, None</code>]:::pyramid
     STORE --> RET
     NONE --> RET
     classDef pyramid fill:#fde4cf,stroke:#f98131,color:#7c2d12
@@ -186,7 +191,7 @@ security policies can read it back off `request.matched_route.predicates` via
 `auth_methods_for_route(route)`. A route opts in by passing `auth_methods` to
 `add_route` or `add_legacy_action_route`. The forklift upload, for example,
 accepts basic-auth (for the `__token__` pass-through) and macaroons, and declares
-support for the upcoming JWT-backed `api-key` method:
+support for the JWT-backed `api-key` method:
 
 ```python
 config.add_legacy_action_route(
@@ -198,33 +203,37 @@ config.add_legacy_action_route(
 ```
 
 The danger-API routes pass `auth_methods={"macaroon", "api-key"}` instead.
-No security policy implements `api-key` yet: these declarations prepare the
-route boundary but do not enable JWT authentication on their own.
+`JWTSecurityPolicy` implements `api-key`, but its default `DisabledJWTVerifier`
+rejects every token. JWT authentication remains disabled until a production
+verifier and the remaining upload integration are implemented.
 Listing `basic-auth` without `macaroon` raises a `ConfigurationError`, since
 the only credential basic-auth lets through is a macaroon.
 
 Each policy consults the predicate during `identity()` and bows out when its
 method is not in the route's allowed set:
 
-| Route declares | Session engages? | BasicAuth engages? | Macaroon engages? |
-|----------------|------------------|--------------------|-------------------|
-| *(no `auth_methods`)* | yes | no (needs explicit opt-in) | yes |
-| `{"basic-auth", "macaroon", "api-key"}` (forklift upload) | no | yes | yes |
-| `{"macaroon", "api-key"}` (danger API) | no | no | yes |
-| `{"api-key"}` (future Maintainer API) | no | no | no |
+| Route declares | Session engages? | BasicAuth engages? | Macaroon engages? | JWT engages? |
+|----------------|------------------|--------------------|-------------------|--------------|
+| *(no `auth_methods`)* | yes | no (needs explicit opt-in) | yes | no |
+| `{"basic-auth", "macaroon", "api-key"}` (forklift upload) | no | yes | yes | yes |
+| `{"macaroon", "api-key"}` (danger API) | no | no | yes | yes |
+| `{"api-key"}` (future Maintainer API) | no | no | no | yes |
 
 `auth_methods_for_route` returns `None` when a route carries no predicate, and
 each policy decides its own default for that case. `SessionSecurityPolicy` and
 `MacaroonSecurityPolicy` still engage on un-tagged routes; `BasicAuthSecurityPolicy`
-only engages when a route explicitly lists `basic-auth`.
+only engages when a route explicitly lists `basic-auth`. `JWTSecurityPolicy`
+requires an explicit `api-key` declaration and a Bearer credential that is not
+a `pypi-` macaroon. Engaging does not imply success: its verifier currently
+rejects all credentials.
 
 ## 4. Authentication: resolving `request.identity`
 
-Every policy's `identity()` does two things up front regardless of outcome: it
-registers a `Vary` response callback (on `Cookie` for sessions, `Authorization`
-for the header-based policies) so caches don't serve one user's response to
-another, and it stamps `request.authentication_method` for downstream logging
-and metrics.
+Every policy's `identity()` registers a `Vary` response callback (on `Cookie`
+for sessions, `Authorization` for the header-based policies) so caches don't
+serve one user's response to another. Session, BasicAuth, and Macaroon stamp
+`request.authentication_method` up front. JWT stamps `API_KEY` only after
+verification and account checks succeed.
 
 ### 4a. `SessionSecurityPolicy`
 
@@ -321,10 +330,38 @@ signature, and maps to a live principal. It does not yet verify the macaroon's
 caveats. That happens in `permits()`, because caveat verification depends on
 the specific context and permission being requested.
 
+### 4d. `JWTSecurityPolicy`
+
+The JWT policy runs after the existing policies, preserving their precedence.
+It accepts only Bearer credentials on routes explicitly allowing `api-key`;
+Basic and Token headers and `pypi-` Bearer macaroons are ignored. Extraction
+does not decode or trust claims. The extracted credential is cached per request
+so authorization uses the same token that established the identity.
+
+`IJWTVerifier.verify(token)` must validate the signature, trusted issuer and
+keys, allowed algorithm, audience, token purpose, required claims, and time
+bounds before returning a Warehouse user ID. Invalid tokens return `None`;
+infrastructure or configuration failures raise. The policy loads the current
+user, rejects missing or disabled accounts, and returns `UserContext(user, None)`.
+
+Authorization requires all three gates to pass, in order:
+
+1. The `API_KEY` authentication-method permission allowlist.
+2. `IJWTVerifier.permits(token, request, context, permission)`, which enforces
+   token validity, subject binding, scopes, and resource restrictions.
+3. The existing resource ACL evaluated with the user's current principals.
+
+The verifier contract deliberately does not choose an issuer, wire claim
+schema, signing algorithm, or key-distribution mechanism. Its registered
+`DisabledJWTVerifier` returns `None` from `verify` and `False` from `permits`.
+Before replacing it, implement cryptographic verification and adapt the upload
+handler's macaroon-specific credential handling. User upload email and MFA
+requirements remain the upload handler's responsibility.
+
 ## 5. Authorization: how `permits` decides
 
 Once an identity exists and the requested permission is known, the producing
-policy's `permits()` runs. Both user-backed policies ultimately consult the
+policy's `permits()` runs. All three user-backed policies ultimately consult the
 same ACL machinery (`pyramid.authorization.ACLHelper`), but they wrap it with
 different gates.
 
@@ -479,7 +516,7 @@ sequenceDiagram
 | `MultiSecurityPolicy` | Tries policies in order, caches `(identity, policy)`, delegates `permits` |
 | `UserContext` | A `User` plus an optional `Macaroon`; `macaroon=None` means session auth |
 | `PublisherTokenContext` | An OIDC publisher plus signed claims (Trusted Publishing) |
-| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `API_KEY` (placeholder) |
+| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `API_KEY` (JWT verifier currently disabled) |
 | `AuthMethodsPredicate` | Storage-only route tag listing which methods may authenticate the route |
 | `PERMISSION_AUTH_METHODS` | Which auth methods may grant which permissions (default: session-only) |
 | `WarehouseDenied` | A `Denied` subclass carrying a human message and a machine `reason` |
