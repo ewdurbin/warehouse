@@ -7,7 +7,7 @@ from warehouse.api.interfaces import IJWTVerifier
 
 @implementer(IJWTVerifier)
 class DisabledJWTVerifier:
-    """Reject all JWTs until a production verifier is implemented."""
+    """Reject all JWTs while JWT authentication is disabled."""
 
     @classmethod
     def create_service(cls, context, request):

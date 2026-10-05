@@ -93,7 +93,7 @@ def includeme(config):
     # Register our login service
     config.register_service_factory(database_login_factory, IUserService)
 
-    # JWT authentication remains disabled until a verifier is implemented.
+    # Keep JWT authentication disabled until issuance and upload integration are ready.
     config.register_service_factory(DisabledJWTVerifier.create_service, IJWTVerifier)
 
     # Register our token services

@@ -18,6 +18,7 @@ or deny a request.
 - [`warehouse/macaroons/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/macaroons/security_policy.py): `MacaroonSecurityPolicy` (API tokens and Trusted Publishing)
 - [`warehouse/accounts/jwt.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/jwt.py): `JWTSecurityPolicy` (JWT-backed API keys)
 - [`warehouse/api/interfaces.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/interfaces.py) and [`warehouse/api/services.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/services.py): the JWT verifier contract and its rejecting default implementation
+- [`warehouse/api/jwt.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/jwt.py): `WarehouseJWTVerifier`, the opt-in verifier for Warehouse-issued JWTs
 - [`warehouse/oidc/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/oidc/utils.py): `PublisherTokenContext`
 - [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): `AuthMethodsPredicate` and the `auth_methods_for_route` helper
 - [`warehouse/routes.py`](https://github.com/pypi/warehouse/blob/main/warehouse/routes.py) and [`warehouse/forklift/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/forklift/__init__.py): route declarations tagged with `auth_methods`
@@ -204,8 +205,8 @@ config.add_legacy_action_route(
 
 The danger-API routes pass `auth_methods={"macaroon", "api-key"}` instead.
 `JWTSecurityPolicy` implements `api-key`, but its default `DisabledJWTVerifier`
-rejects every token. JWT authentication remains disabled until a production
-verifier and the remaining upload integration are implemented.
+rejects every token. JWT authentication remains disabled pending issuance,
+key configuration, and the remaining upload integration.
 Listing `basic-auth` without `macaroon` raises a `ConfigurationError`, since
 the only credential basic-auth lets through is a macaroon.
 
@@ -351,10 +352,65 @@ Authorization requires all three gates to pass, in order:
    token validity, subject binding, scopes, and resource restrictions.
 3. The existing resource ACL evaluated with the user's current principals.
 
-The verifier contract deliberately does not choose an issuer, wire claim
-schema, signing algorithm, or key-distribution mechanism. Its registered
-`DisabledJWTVerifier` returns `None` from `verify` and `False` from `permits`.
-Before replacing it, implement cryptographic verification and adapt the upload
+The registered `DisabledJWTVerifier` still returns `None` from `verify` and
+`False` from `permits`. `WarehouseJWTVerifier` implements the following initial
+Warehouse-issued token profile, but is **not registered**:
+
+- JOSE headers are exactly `alg`, `typ`, and `kid`. The algorithm is fixed to
+  `RS256`, the type must be `warehouse-api-key+jwt`, and the key ID must identify
+  a trusted RSA public key supplied to the verifier. Keys must be at least
+  2048 bits. Tokens cannot supply keys, key URLs, or JOSE extensions.
+- `iss` and `aud` must exactly match the issuer and single audience supplied
+  to the verifier. Audience arrays are rejected. `sub` is a canonical Warehouse
+  user UUID, not a username or publisher identity.
+- `iat` and `exp` are required integer NumericDates. Optional `nbf` is also an
+  integer. Future issuance/not-before times and expired tokens are rejected,
+  with no clock-skew allowance. The issued lifetime must satisfy
+  `0 < exp - iat <= 300`: exactly five minutes is allowed, but anything longer
+  is rejected even in its final five minutes. `nbf` does not shorten the issued
+  lifetime for this check. The verifier rechecks validity on every authorization
+  call, even if request identity has already been cached.
+- `permissions` is a required, nonempty array containing only
+  `projects:upload`, `api:echo`, and/or `api:observations:add`.
+- `project_ids` is a required array of canonical project UUIDs. Upload and
+  observation permissions require a `Project` context with an ID in this list.
+  An empty list grants no project access; echo does not need a project.
+- Unknown claims, wildcard permissions, and wildcard project grants are
+  rejected. In particular, this profile cannot authorize first-time project
+  creation or grant account-wide upload access.
+
+The constructor accepts `issuer`, `audience`, and a `keys` mapping from key ID
+to parsed RSA public key. Multiple keys can be supplied for rotation. It makes
+no network requests. Bad configuration and operational errors raise rather
+than being treated as invalid credentials. The verifier binds authorization
+to the authenticated user's UUID; token permission and project grants still
+cannot bypass the live user/resource ACL.
+
+Each environment uses one issuer and separate audiences for the upload endpoint
+and the API (initially the danger API). Upload tokens must not authenticate API
+requests, and API tokens must not authenticate uploads, even if their permissions
+would otherwise allow the operation. Permissions and project scopes further
+restrict operations within the intended recipient; an audience match alone does
+not grant permission.
+The concrete issuer and audience values will be specified when deployment
+configuration and minting are implemented.
+
+Supply the expected issuer and recipient-specific audience explicitly to each
+verifier and require exact matches. Future service wiring must select the
+verifier from trusted route configuration, not from the token's claimed audience
+or an audience string constructed from the incoming request's host or path.
+Neither recipient should accept both audiences as a global allowlist, and
+multi-audience tokens remain rejected. Issuers and audience values must be
+distinct across environments, with separate signing keys between environments.
+This profile does not use the `warehouse.oidc.audience` setting, which is for
+incoming third-party Trusted Publishing assertions. Deployment settings,
+recipient-specific service wiring, and key loading are not implemented yet;
+`DisabledJWTVerifier` remains registered.
+
+Token issuance, deployment settings/key loading, and per-token
+revocation remain follow-up work; the verifier currently provides signature
+and expiration enforcement, not a revocation store. Before replacing the
+disabled service, resolve those lifecycle decisions and adapt the upload
 handler's macaroon-specific credential handling. User upload email and MFA
 requirements remain the upload handler's responsibility.
 
