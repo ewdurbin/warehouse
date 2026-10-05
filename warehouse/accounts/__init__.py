@@ -40,7 +40,7 @@ from warehouse.accounts.tasks import (
 )
 from warehouse.accounts.utils import UserContext
 from warehouse.api.interfaces import IJWTVerifier
-from warehouse.api.services import DisabledJWTVerifier
+from warehouse.api.services import jwt_verifier_factory
 from warehouse.macaroons.security_policy import MacaroonSecurityPolicy
 from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.utils.security_policy import MultiSecurityPolicy
@@ -93,8 +93,10 @@ def includeme(config):
     # Register our login service
     config.register_service_factory(database_login_factory, IUserService)
 
-    # Keep JWT authentication disabled until issuance and upload integration are ready.
-    config.register_service_factory(DisabledJWTVerifier.create_service, IJWTVerifier)
+    # JWT authentication remains disabled unless explicitly configured otherwise.
+    config.register_service_factory(
+        jwt_verifier_factory(config.registry.settings), IJWTVerifier
+    )
 
     # Register our token services
     config.register_service_factory(

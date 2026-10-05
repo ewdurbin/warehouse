@@ -19,6 +19,7 @@ from pyramid.authorization import Allow, Authenticated
 from pyramid.config import Configurator as _Configurator
 from pyramid.exceptions import HTTPForbidden
 from pyramid.httpexceptions import HTTPBadRequest
+from pyramid.settings import asbool
 from pyramid.tweens import EXCVIEW
 from pyramid_rpc.xmlrpc import XMLRPCRenderer
 
@@ -476,6 +477,16 @@ def configure(settings=None):
     )
     maybe_set_compound(settings, "github.oauth", "backend", "GITHUB_OAUTH_BACKEND")
     maybe_set_compound(settings, "gitlab.oauth", "backend", "GITLAB_OAUTH_BACKEND")
+    maybe_set(settings, "warehouse.jwt.enabled", "JWT_ENABLED", coercer=asbool)
+    maybe_set(settings, "warehouse.jwt.issuer", "JWT_ISSUER")
+    maybe_set(settings, "warehouse.jwt.upload_audience", "JWT_UPLOAD_AUDIENCE")
+    maybe_set(settings, "warehouse.jwt.api_audience", "JWT_API_AUDIENCE")
+    maybe_set(
+        settings,
+        "warehouse.jwt.verification_keys",
+        "JWT_VERIFICATION_KEYS",
+        coercer=json.loads,
+    )
     maybe_set(
         settings,
         "oidc.backend",

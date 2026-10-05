@@ -13,6 +13,10 @@ class IJWTVerifier(Interface):
         subject must never be used as an identity. Invalid credentials return
         None; infrastructure and configuration failures must raise.
 
+        Bind the service to its intended recipient using trusted server-side
+        route configuration. Token claims must not select the expected issuer
+        or audience.
+
         This establishes identity only. Callers must also enforce token
         restrictions with permits(), account status, and the resource ACL.
         """

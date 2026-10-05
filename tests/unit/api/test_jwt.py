@@ -10,12 +10,15 @@ from uuid import UUID
 import jwt
 import pytest
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from freezegun import freeze_time
 from jwt.utils import base64url_encode
 from pyramid import testing
 from pyramid.authorization import Allow, Authenticated
+from pyramid.exceptions import ConfigurationError
+from pyramid.interfaces import IRoutesMapper
 from pyramid.request import Request, apply_request_extensions
 from zope.interface.verify import verifyClass
 
@@ -23,11 +26,12 @@ from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.jwt import JWTSecurityPolicy
 from warehouse.accounts.utils import UserContext
 from warehouse.api.interfaces import IJWTVerifier
-from warehouse.api.jwt import WarehouseJWTVerifier
-from warehouse.api.services import DisabledJWTVerifier
+from warehouse.api.jwt import WarehouseJWTVerifier, WarehouseJWTVerifierFactory
+from warehouse.api.services import DisabledJWTVerifier, jwt_verifier_factory
 from warehouse.authnz import Permissions
 from warehouse.packaging.models import Project
-from warehouse.predicates import AuthMethodsPredicate
+from warehouse.predicates import AuthMethodsPredicate, JWTAudiencePredicate
+from warehouse.routes import includeme as include_routes
 from warehouse.utils.security_policy import AuthenticationMethod, MultiSecurityPolicy
 
 ISSUER = "https://warehouse.example"
@@ -125,6 +129,342 @@ def request_identity(user):
 @pytest.fixture
 def project(mocker):
     return mocker.Mock(spec=Project, id=UUID(PROJECT_ID))
+
+
+@pytest.fixture
+def jwt_settings(signing_keys):
+    return {
+        "warehouse.jwt.enabled": True,
+        "warehouse.jwt.issuer": ISSUER,
+        "warehouse.jwt.upload_audience": UPLOAD_AUDIENCE,
+        "warehouse.jwt.api_audience": API_AUDIENCE,
+        "warehouse.jwt.verification_keys": {
+            kid: key.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+            for kid, key in zip(("current", "previous"), signing_keys, strict=True)
+        },
+    }
+
+
+class TestWarehouseJWTVerifierFactory:
+    def test_enabled_without_configuration(self):
+        with pytest.raises(ConfigurationError):
+            jwt_verifier_factory({"warehouse.jwt.enabled": True})
+
+    @pytest.mark.parametrize(
+        "setting",
+        ["issuer", "upload_audience", "api_audience", "verification_keys"],
+    )
+    def test_missing_setting(self, jwt_settings, setting):
+        del jwt_settings[f"warehouse.jwt.{setting}"]
+        with pytest.raises(ConfigurationError, match=r"JWT|warehouse\.jwt"):
+            jwt_verifier_factory(jwt_settings)
+
+    @pytest.mark.parametrize(
+        ("setting", "value"),
+        [
+            ("issuer", ""),
+            ("issuer", [ISSUER]),
+            ("upload_audience", ""),
+            ("api_audience", ""),
+            ("api_audience", [API_AUDIENCE]),
+            ("api_audience", UPLOAD_AUDIENCE),
+            ("verification_keys", {}),
+            ("verification_keys", []),
+            ("verification_keys", "not a mapping"),
+            ("verification_keys", {"current": None}),
+            ("verification_keys", {"current": "not PEM"}),
+        ],
+    )
+    def test_invalid_setting(self, jwt_settings, setting, value):
+        jwt_settings[f"warehouse.jwt.{setting}"] = value
+        with pytest.raises(ConfigurationError, match=r"JWT|warehouse\.jwt"):
+            jwt_verifier_factory(jwt_settings)
+
+    @pytest.mark.parametrize("kid", ["", 1])
+    def test_invalid_key_id(self, jwt_settings, kid):
+        keys = jwt_settings["warehouse.jwt.verification_keys"]
+        jwt_settings["warehouse.jwt.verification_keys"] = {kid: keys["current"]}
+        with pytest.raises(ConfigurationError, match="key IDs"):
+            jwt_verifier_factory(jwt_settings)
+
+    def test_private_key(self, jwt_settings, signing_keys):
+        jwt_settings["warehouse.jwt.verification_keys"]["current"] = (
+            signing_keys[0]
+            .private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+            .decode()
+        )
+        with pytest.raises(ConfigurationError, match="PEM public key"):
+            jwt_verifier_factory(jwt_settings)
+
+    @pytest.mark.parametrize("kind", ["ec", "weak-rsa"])
+    def test_unsuitable_public_key(self, jwt_settings, kind):
+        if kind == "ec":
+            key = ec.generate_private_key(ec.SECP256R1())
+        else:
+            # Deliberately insecure: startup must reject this key.
+            key = rsa.generate_private_key(public_exponent=65537, key_size=1024)  # noqa: S505
+        jwt_settings["warehouse.jwt.verification_keys"]["current"] = (
+            key.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
+        with pytest.raises(ConfigurationError, match="RSA public keys >= 2048 bits"):
+            jwt_verifier_factory(jwt_settings)
+
+    def test_unsupported_key_algorithm(self, jwt_settings, mocker):
+        mocker.patch(
+            "warehouse.api.jwt.load_pem_public_key",
+            side_effect=UnsupportedAlgorithm("Unsupported key algorithm"),
+        )
+        with pytest.raises(ConfigurationError, match="PEM public key"):
+            jwt_verifier_factory(jwt_settings)
+
+    def test_loads_keys_once(self, jwt_settings, mocker, clock, sign):
+        load = mocker.patch(
+            "warehouse.api.jwt.load_pem_public_key",
+            wraps=serialization.load_pem_public_key,
+        )
+        factory = jwt_verifier_factory(jwt_settings)
+        assert isinstance(factory, WarehouseJWTVerifierFactory)
+        assert load.call_count == 2
+        request = testing.DummyRequest()
+        request.matched_route = types.SimpleNamespace(
+            name="api.echo",
+            predicates=[
+                AuthMethodsPredicate({"api-key"}, None),
+                JWTAudiencePredicate("api", None),
+            ],
+        )
+        # Configuration is snapshotted at startup, never read from the request.
+        jwt_settings["warehouse.jwt.verification_keys"].clear()
+        jwt_settings["warehouse.jwt.api_audience"] = UPLOAD_AUDIENCE
+        verifier = factory(None, request)
+        assert factory(None, request) is verifier
+        assert verifier.verify(sign()) == USER_ID
+        assert load.call_count == 2
+
+    @pytest.mark.parametrize(
+        "route_name",
+        [
+            None,
+            "api.echo",
+            "forklift.legacy.file_upload",
+            "api.unknown",
+            "api.echo.attacker",
+            "forklift.legacy.submit",
+            "manage.account",
+        ],
+    )
+    def test_missing_audience(self, jwt_settings, route_name, clock, sign):
+        request = testing.DummyRequest()
+        request.matched_route = (
+            types.SimpleNamespace(
+                name=route_name, predicates=[AuthMethodsPredicate({"api-key"}, None)]
+            )
+            if route_name is not None
+            else None
+        )
+        verifier = jwt_verifier_factory(jwt_settings)(None, request)
+        assert isinstance(verifier, DisabledJWTVerifier)
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize("methods", [None, set(), {"macaroon"}])
+    def test_route_requires_api_key_opt_in(self, jwt_settings, methods):
+        request = testing.DummyRequest()
+        request.matched_route = types.SimpleNamespace(
+            name="api.echo",
+            predicates=[JWTAudiencePredicate("api", None)]
+            + ([] if methods is None else [AuthMethodsPredicate(methods, None)]),
+        )
+        assert isinstance(
+            jwt_verifier_factory(jwt_settings)(None, request), DisabledJWTVerifier
+        )
+
+
+class TestAudienceJWTService:
+    @pytest.fixture
+    def jwt_enabled(self):
+        return True
+
+    @pytest.fixture
+    def make_request(self, jwt_settings, jwt_enabled, user, mocker, clock):
+        jwt_settings.pop("warehouse.jwt.enabled")
+        if jwt_enabled is not None:
+            jwt_settings["warehouse.jwt.enabled"] = jwt_enabled
+        user_service = mocker.Mock(spec=["get_user", "is_disabled"])
+        user_service.get_user.return_value = user
+        user_service.is_disabled.return_value = (False, None)
+        jwt_settings.update(
+            {
+                "docs.url": "https://docs.example",
+                "files.url": "https://files.example/{path}",
+            }
+        )
+        with testing.testConfig(settings=jwt_settings) as config:
+            config.include("pyramid_services")
+            config.include("warehouse.predicates")
+            config.include("warehouse.legacy.action_routing")
+            config.include("warehouse.forklift")
+            # Install the application's actual add_route declarations without
+            # unrelated redirect/template/XML-RPC view configuration.
+            route_config = mocker.Mock()
+            route_config.get_settings.return_value = config.get_settings()
+            route_config.registry = config.registry
+            route_config.add_route = config.add_route
+            include_routes(route_config)
+            for audience_name in ("api", "upload"):
+                config.add_route(
+                    f"new-endpoint.{audience_name}",
+                    f"/audience-test/{audience_name}",
+                    auth_methods={"api-key"},
+                    jwt_audience=audience_name,
+                )
+            config.register_service_factory(
+                jwt_verifier_factory(config.get_settings()), IJWTVerifier
+            )
+            config.register_service(user_service, IUserService)
+            config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
+            config.commit()
+            mapper = config.registry.getUtility(IRoutesMapper)
+
+            def make_request(path, token):
+                request = Request.blank(path)
+                request.registry = config.registry
+                apply_request_extensions(request)
+                request.headers["Authorization"] = f"Bearer {token}"
+                match = mapper(request)
+                request.matched_route = match["route"]
+                request.matchdict = match["match"]
+                return request
+
+            yield make_request
+
+    @pytest.mark.parametrize(
+        ("path", "route_name", "audience", "permission"),
+        [
+            (
+                "/legacy/?:action=file_upload",
+                "forklift.legacy.file_upload",
+                UPLOAD_AUDIENCE,
+                Permissions.ProjectsUpload,
+            ),
+            ("/danger-api/echo", "api.echo", API_AUDIENCE, Permissions.APIEcho),
+            (
+                "/danger-api/projects/example/observations",
+                "api.projects.observations",
+                API_AUDIENCE,
+                Permissions.APIObservationsAdd,
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "token_audience",
+        [API_AUDIENCE, UPLOAD_AUDIENCE, [API_AUDIENCE, UPLOAD_AUDIENCE]],
+    )
+    @pytest.mark.parametrize("kid", ["current", "previous"])
+    def test_audience_binding(
+        self,
+        make_request,
+        sign,
+        claims,
+        headers,
+        signing_keys,
+        user,
+        project,
+        path,
+        route_name,
+        audience,
+        permission,
+        token_audience,
+        kid,
+    ):
+        claims["aud"] = token_audience
+        headers["kid"] = kid
+        token = sign(key=signing_keys[0 if kid == "current" else 1])
+        request = make_request(path, token)
+        assert request.matched_route.name == route_name
+        project.__acl__ = [(Allow, f"user:{USER_ID}", permission)]
+        accepted = token_audience == audience
+        assert request.identity == (
+            UserContext(user, macaroon=None) if accepted else None
+        )
+        assert bool(request.has_permission(permission, project)) == accepted
+        if accepted:
+            assert request.authentication_method == AuthenticationMethod.API_KEY
+
+    @pytest.mark.parametrize("jwt_enabled", [None, False, "false"])
+    def test_disabled_by_default(self, make_request, sign):
+        # Having valid keys alone must not enable JWTs.
+        request = make_request("/danger-api/echo", sign())
+        assert isinstance(
+            request.find_service(IJWTVerifier, context=None), DisabledJWTVerifier
+        )
+        assert request.identity is None
+
+    @pytest.mark.parametrize(
+        ("audience_name", "audience"),
+        [("api", API_AUDIENCE), ("upload", UPLOAD_AUDIENCE)],
+    )
+    @pytest.mark.parametrize("token_audience", [API_AUDIENCE, UPLOAD_AUDIENCE])
+    def test_new_routes_need_no_verifier_changes(
+        self, make_request, sign, claims, audience_name, audience, token_audience
+    ):
+        claims["aud"] = token_audience
+        request = make_request(f"/audience-test/{audience_name}", sign())
+        assert request.matched_route.name == f"new-endpoint.{audience_name}"
+        assert (request.identity is not None) == (token_audience == audience)
+
+    def test_audiences_do_not_change_each_others_verifier(
+        self, make_request, sign, claims, project
+    ):
+        api_request = make_request("/danger-api/echo", sign())
+        claims["aud"] = UPLOAD_AUDIENCE
+        upload_request = make_request("/legacy/?:action=file_upload", sign())
+        assert api_request.identity is not None
+        assert upload_request.identity is not None
+        project.__acl__ = [
+            (
+                Allow,
+                f"user:{USER_ID}",
+                [Permissions.APIEcho, Permissions.ProjectsUpload],
+            )
+        ]
+        assert api_request.has_permission(Permissions.APIEcho, project)
+        assert upload_request.has_permission(Permissions.ProjectsUpload, project)
+        assert api_request.has_permission(Permissions.APIEcho, project)
+
+    @pytest.mark.parametrize(
+        "matched_path", ["/danger-api/echo", "/legacy/?:action=file_upload"]
+    )
+    def test_untrusted_request_fields_cannot_choose_audience(
+        self, make_request, sign, claims, matched_path
+    ):
+        claims["aud"] = (
+            UPLOAD_AUDIENCE if matched_path.startswith("/danger-api") else API_AUDIENCE
+        )
+        request = make_request(matched_path, sign())
+        # Once routing is resolved, even hostile request metadata cannot select
+        # the other verifier. Real routing is tested separately above.
+        request.host = "attacker.example"
+        request.path_info = (
+            "/legacy/" if matched_path.startswith("/danger-api") else "/danger-api/echo"
+        )
+        request.query_string = f"aud={claims['aud']}&jwt_audience=api"
+        request.headers["X-Forwarded-Host"] = "attacker.example"
+        request.headers["X-JWT-Audience"] = claims["aud"]
+        assert request.identity is None
 
 
 class TestWarehouseJWTVerifier:

@@ -650,6 +650,7 @@ def includeme(config):
         "api.echo",
         "/danger-api/echo",
         auth_methods={"macaroon", "api-key"},
+        jwt_audience="api",
         domain=warehouse,
     )
     config.add_route(
@@ -658,6 +659,7 @@ def includeme(config):
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{name}",
         auth_methods={"macaroon", "api-key"},
+        jwt_audience="api",
         domain=warehouse,
     )
 

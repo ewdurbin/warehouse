@@ -225,8 +225,8 @@ each policy decides its own default for that case. `SessionSecurityPolicy` and
 `MacaroonSecurityPolicy` still engage on un-tagged routes; `BasicAuthSecurityPolicy`
 only engages when a route explicitly lists `basic-auth`. `JWTSecurityPolicy`
 requires an explicit `api-key` declaration and a Bearer credential that is not
-a `pypi-` macaroon. Engaging does not imply success: its verifier currently
-rejects all credentials.
+a `pypi-` macaroon. Engaging does not imply success: the default verifier rejects
+all credentials.
 
 ## 4. Authentication: resolving `request.identity`
 
@@ -352,9 +352,9 @@ Authorization requires all three gates to pass, in order:
    token validity, subject binding, scopes, and resource restrictions.
 3. The existing resource ACL evaluated with the user's current principals.
 
-The registered `DisabledJWTVerifier` still returns `None` from `verify` and
-`False` from `permits`. `WarehouseJWTVerifier` implements the following initial
-Warehouse-issued token profile, but is **not registered**:
+The default `DisabledJWTVerifier` returns `None` from `verify` and `False` from
+`permits`. `WarehouseJWTVerifier` implements the following initial
+Warehouse-issued token profile, but requires explicit configuration to enable:
 
 - JOSE headers are exactly `alg`, `typ`, and `kid`. The algorithm is fixed to
   `RS256`, the type must be `warehouse-api-key+jwt`, and the key ID must identify
@@ -393,26 +393,71 @@ would otherwise allow the operation. Permissions and project scopes further
 restrict operations within the intended recipient; an audience match alone does
 not grant permission.
 The concrete issuer and audience values will be specified when deployment
-configuration and minting are implemented.
+and minting are implemented.
 
 Supply the expected issuer and recipient-specific audience explicitly to each
-verifier and require exact matches. Future service wiring must select the
-verifier from trusted route configuration, not from the token's claimed audience
-or an audience string constructed from the incoming request's host or path.
+verifier and require exact matches. `WarehouseJWTVerifierFactory` selects the
+verifier using the matched route's trusted `jwt_audience` declaration, never the
+token's claimed audience or a value constructed from the request's host or path:
+
+| Route | `jwt_audience` |
+| --- | --- |
+| `forklift.legacy.file_upload` | `"upload"` |
+| `api.echo` | `"api"` |
+| `api.projects.observations` | `"api"` |
+
+Declare the named audience next to `auth_methods` when adding a route:
+
+```python
+config.add_route(
+    "api.echo",
+    "/danger-api/echo",
+    auth_methods={"macaroon", "api-key"},
+    jwt_audience="api",
+)
+```
+
+Like `auth_methods`, `jwt_audience` is storage-only metadata and does not affect
+route matching. Its only valid values are `"upload"` and `"api"`; other values
+fail application configuration. These labels select deployment-configured
+audiences; they are not literal `aud` claim values or strings supplied by the
+client.
+
+The route must also explicitly allow `api-key` authentication. Missing routes or
+routes without an audience declaration receive a rejecting verifier. Route names
+and prefixes do not imply an audience, and adding or renaming routes requires no
+change to the verifier.
+
 Neither recipient should accept both audiences as a global allowlist, and
 multi-audience tokens remain rejected. Issuers and audience values must be
 distinct across environments, with separate signing keys between environments.
 This profile does not use the `warehouse.oidc.audience` setting, which is for
-incoming third-party Trusted Publishing assertions. Deployment settings,
-recipient-specific service wiring, and key loading are not implemented yet;
-`DisabledJWTVerifier` remains registered.
+incoming third-party Trusted Publishing assertions.
 
-Token issuance, deployment settings/key loading, and per-token
-revocation remain follow-up work; the verifier currently provides signature
-and expiration enforcement, not a revocation store. Before replacing the
-disabled service, resolve those lifecycle decisions and adapt the upload
-handler's macaroon-specific credential handling. User upload email and MFA
-requirements remain the upload handler's responsibility.
+`DisabledJWTVerifier` remains the default, even when issuer, audience, and key
+settings are supplied. The configuration surface for explicitly opting in is:
+
+| Setting | Environment variable | Value |
+| --- | --- | --- |
+| `warehouse.jwt.enabled` | `JWT_ENABLED` | Boolean; defaults to false |
+| `warehouse.jwt.issuer` | `JWT_ISSUER` | Exact issuer for this environment |
+| `warehouse.jwt.upload_audience` | `JWT_UPLOAD_AUDIENCE` | Exact upload audience |
+| `warehouse.jwt.api_audience` | `JWT_API_AUDIENCE` | Exact API audience, distinct from upload |
+| `warehouse.jwt.verification_keys` | `JWT_VERIFICATION_KEYS` | Mapping of key IDs to PEM RSA public-key strings; JSON in the environment variable |
+
+When enabled, startup validates the configuration and loads the public keys
+once. Missing/invalid settings, shared upload/API audiences, private keys,
+non-RSA keys, and RSA keys smaller than 2048 bits fail configuration rather than
+silently disabling verification. Multiple key IDs support overlapping
+verification keys during rotation. Changing settings or keys requires rebuilding
+the application configuration; no token-supplied URL or key is loaded.
+
+Token issuance, deployment activation, and per-token revocation remain follow-up
+work; the verifier currently provides signature and expiration enforcement, not
+a revocation store. Before enabling JWT authentication in a deployment, resolve
+those lifecycle decisions and adapt the upload handler's macaroon-specific
+credential handling. User upload email and MFA requirements remain the upload
+handler's responsibility.
 
 ## 5. Authorization: how `permits` decides
 
