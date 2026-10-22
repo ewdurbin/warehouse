@@ -602,10 +602,25 @@ token. Supplying project-restricted details remains supported when narrowing is
 required. Signing key rotation selects a new key ID while retaining old public
 keys long enough to verify outstanding tokens.
 
+The OIDC exchange accepts an optional `token_format` of `"macaroon"` (the default)
+or `"jwt"`. Unknown formats fail payload validation. JWT opt-in requires an enabled
+`IJWTIssuer`; unavailable issuance is rejected before publisher reification or
+upstream replay-token consumption, without falling back to a macaroon. Provider
+verification, publisher matching, pending-publisher handling, replay protection,
+events, and notifications remain shared between formats.
+
+The JWT exchange chooses the publisher subject, upload audience, a permission-wide
+`projects:upload` authorization detail, and a five-minute lifetime on the server.
+The client cannot select those claims. Filtered `stored_claims` go into the
+registry's `additional["oidc"]`, not the JWT. The response keeps the existing
+`success`, `token`, and integer `expires` fields; default macaroons retain their
+15-minute lifetime. Use JWTs as `Authorization: Bearer <token>`, never Basic
+`__token__` credentials.
+
 The JWT policy enforces registry liveness at authentication and authorization;
-the cryptographic verifier remains independent of the database. Opt-in JWT
-issuance through the OIDC exchange, the burn endpoint, and deployment activation
-remain follow-up work. The OIDC exchange still issues macaroons only. Before
+the cryptographic verifier remains independent of the database. JWT support in
+the burn endpoint, full upload-flow validation, and deployment activation
+remain follow-up work. Before
 enabling JWT authentication in a deployment, complete those integrations and
 adapt the upload handler's macaroon-specific credential handling. User upload
 email and MFA requirements remain the upload handler's responsibility. The

@@ -39,6 +39,8 @@ def jwt_issuer_factory(settings):
 
 @implementer(IJWTIssuer)
 class DisabledJWTIssuer:
+    enabled = False
+
     @classmethod
     def create_service(cls, context, request):
         return cls()

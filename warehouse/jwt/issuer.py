@@ -114,6 +114,8 @@ class WarehouseJWTIssuer:
     upstream OIDC assertion or changes the exchange endpoint's response format.
     """
 
+    enabled = True
+
     def __init__(self, *, registry, config: WarehouseJWTIssuerFactory):
         self.registry = registry
         self.config = config

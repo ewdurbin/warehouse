@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from zope.interface import Interface
+from zope.interface import Attribute, Interface
 
 from warehouse.jwt.claims import AuthorizationDetail, SignedJWT, SubjectRef, VerifiedJWT
 from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
@@ -43,6 +43,8 @@ class IJWTVerifier(Interface):
 
 
 class IJWTIssuer(Interface):
+    enabled = Attribute("Whether new JWTs can be issued with this configuration")
+
     def issue(
         *,
         subject: SubjectRef,
