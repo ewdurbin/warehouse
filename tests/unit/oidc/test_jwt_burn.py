@@ -76,7 +76,7 @@ def issue_upload_jwt(issuer, publisher):
 class TestBurnJWT:
     @pytest.fixture(autouse=True)
     def setup_verifier(self, db_request, pyramid_services, warehouse_jwt_settings):
-        verifier = jwt_verifier_factory(warehouse_jwt_settings, audience="upload")(
+        verifier = jwt_verifier_factory(warehouse_jwt_settings).for_audience("upload")(
             None, db_request
         )
         pyramid_services.register_service(verifier, IJWTVerifier, None, name="upload")
