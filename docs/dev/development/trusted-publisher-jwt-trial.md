@@ -28,53 +28,38 @@ Apply the registry migration with `make runmigrations` before issuing tokens.
 The registry and its `additional` metadata column must exist on every deployment
 using the feature.
 
-Generate a **local-only** key pair using OpenSSL, keeping the private key outside
-the checkout. Do not reuse production keys, enable shell tracing, print these
-environment variables, or include them in bug reports:
+Start the opt-in [local KMS emulator](https://github.com/nsmithuk/local-kms), create
+a signing key, and generate a Compose override with its public key and local trial
+settings:
 
 ```shell
-umask 077
-jwt_trial_dir="$(mktemp -d)"
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
-  -out "$jwt_trial_dir/private.pem"
-openssl pkey -in "$jwt_trial_dir/private.pem" -pubout \
-  -out "$jwt_trial_dir/public.pem"
-
-export JWT_ENABLED=true
-export JWT_ISSUER=urn:warehouse:local
-export JWT_UPLOAD_AUDIENCE=urn:warehouse:local:upload
-export JWT_API_AUDIENCE=urn:warehouse:local:api
-export JWT_SIGNING_KEY_ID=local-trial
-export JWT_SIGNING_KEY="$(cat "$jwt_trial_dir/private.pem")"
-export JWT_VERIFICATION_KEYS="$(python3 -c \
-  'import json, sys; print(json.dumps({"local-trial": sys.stdin.read()}))' \
-  < "$jwt_trial_dir/public.pem")"
+docker compose up -d kms
+mkdir -p .state
+docker compose run --rm --no-deps base python bin/dev-jwt-kms.py \
+  > .state/jwt-kms.compose.json
+docker compose --profile jwt-kms -f docker-compose.yml \
+  -f .state/jwt-kms.compose.json up -d web
 ```
 
-These issuer/audience strings are exact identifiers, not URLs Warehouse fetches.
-Choose different values for each environment; upload and API audiences must also
-be distinct. Both audience settings are required even for this upload-only trial.
+The emulator is reachable only inside the Compose network. The helper uses dummy
+AWS credentials, creates a new key in the emulator, and writes a JSON document
+that Compose can read as YAML. It contains a public key, not private key material.
+The emulator's data volume persists between container restarts. For an existing
+private Compose override, add `-f docker-compose.override.yaml` after the base
+file; remove any old `JWT_SIGNING_KEY` entry before combining it with KMS.
 
-Compose does not automatically forward every shell or `.env` variable into the
-web container. Merge this mapping into your **private** Compose override, preserving
-any existing settings:
+To exercise rotation, create a second key while retaining the first public key,
+then deploy the generated override. The old and new JWTs remain verifiable:
 
-```yaml
-services:
-  web:
-    environment:
-      JWT_ENABLED: "${JWT_ENABLED:-false}"
-      JWT_ISSUER: "${JWT_ISSUER:?set JWT_ISSUER}"
-      JWT_UPLOAD_AUDIENCE: "${JWT_UPLOAD_AUDIENCE:?set JWT_UPLOAD_AUDIENCE}"
-      JWT_API_AUDIENCE: "${JWT_API_AUDIENCE:?set JWT_API_AUDIENCE}"
-      JWT_VERIFICATION_KEYS: "${JWT_VERIFICATION_KEYS:?set JWT_VERIFICATION_KEYS}"
-      JWT_SIGNING_KEY_ID: "${JWT_SIGNING_KEY_ID:?set JWT_SIGNING_KEY_ID}"
-      JWT_SIGNING_KEY: "${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY}"
+```shell
+docker compose run --rm --no-deps base python bin/dev-jwt-kms.py \
+  --rotate-from .state/jwt-kms.compose.json > .state/jwt-kms-next.compose.json
+docker compose --profile jwt-kms -f docker-compose.yml \
+  -f .state/jwt-kms-next.compose.json up -d web
 ```
 
-Recreate the web service with `docker compose up -d --no-deps --force-recreate web`.
-A restart alone does not update container environment variables. Do not paste
-`docker compose config` output: it can contain the private key.
+The local issuer and audience strings are exact identifiers, not URLs Warehouse
+fetches. Production environments must select their own distinct values and keys.
 
 !!! warning "Development OIDC is deliberately insecure"
 
@@ -117,8 +102,10 @@ removes that project's upload authorization; adding one makes it available to an
 otherwise-valid token. Deleting the registry row revokes the token. Revocation
 affects subsequent validation, not uploads already authorized and in progress.
 
-A disabled JWT issuer returns HTTP 422 (`not-enabled`), without falling back
-to a macaroon or consuming the upstream assertion. Do not silently retry without
+A disabled JWT issuer returns HTTP 422 (`not-enabled`), without falling back to a
+macaroon or consuming the upstream assertion. A KMS signing failure is a server
+error and may consume the assertion's `jti`, if present; obtain a fresh assertion
+before retrying. Do not silently retry without
 `token_format`. Older servers may ignore an unknown request field and return a
 macaroon: clients opting in must detect this instead of reporting a JWT trial as
 successful. Omitted `token_format`, or explicit `"macaroon"`, keeps the existing
@@ -199,23 +186,19 @@ with requests.Session() as client:
 
 Keep the feature disabled outside an explicitly configured trial. Before a real
 deployment, distribute the correct issuer, separate audiences, and public keys to
-every verifier; supply the matching private key only where issuance is needed.
-Verification-only instances can omit **both** signing settings. Confirm the
+every verifier; give KMS signing access only to workloads that issue credentials.
+Verification-only instances can omit signing settings. Confirm the
 registry migration, cleanup worker, real OIDC backend, HTTPS endpoints, and client
 Bearer support before inviting opt-in clients.
 
-For normal signing-key rotation, change the active key ID/private key while
-retaining old public keys for at least the remaining five-minute token lifetime
-after the last old-key issuer stops. Retire a compromised key immediately instead.
+For production signing-key rotation, follow the [overlapping key procedure](../security/security-policy-flow.md#4d-jwtsecuritypolicy).
 
 To stop a local trial, burn outstanding trial tokens first if you need their
 registry rows removed immediately: disabling JWT verification also disables JWT
-burning. Remove the JWT environment entries added above from your private Compose
-override, preserving any unrelated settings, then recreate the web service with
-`docker compose up -d --no-deps --force-recreate web`. This restores the default
-disabled configuration; macaroon clients continue working. Remove the local key
-files and unset the exported JWT variables after updating the override so later
-Compose commands can load its configuration.
+burning. Recreate the web service with your normal Compose configuration, excluding
+the generated override, then stop the emulator with `docker compose stop kms`.
+This restores the default disabled configuration; macaroon clients continue working.
+The emulator keys remain in the Compose `jwt_kms_data` volume until you remove it.
 
 Disabling JWTs does not itself delete registry rows or revoke unexpired tokens if
 you re-enable the feature before they expire. Their short expiry bounds their

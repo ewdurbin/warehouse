@@ -628,7 +628,6 @@ integer-second timestamp. The returned immutable `SignedJWT` contains `token`,
 handing out the credential and roll back on failure. Issuance itself neither
 authenticates an upstream identity nor authorizes the requested grants.
 
-
 The OIDC exchange accepts an optional `token_format` of `"macaroon"` (the default)
 or `"jwt"`. Unknown formats fail payload validation. JWT opt-in requires an enabled
 `IJWTIssuer`; disabled issuance is rejected before publisher reification or
