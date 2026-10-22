@@ -19,6 +19,7 @@ or deny a request.
 - [`warehouse/jwt/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/security_policy.py): `JWTSecurityPolicy` (JWT-backed API keys)
 - [`warehouse/jwt/interfaces.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/interfaces.py) and [`warehouse/jwt/services.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/services.py): the JWT verifier and registry contracts, their services, and the rejecting default verifier
 - [`warehouse/jwt/verifier.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/verifier.py): `WarehouseJWTVerifier`, the opt-in verifier for Warehouse-issued JWTs
+- [`warehouse/jwt/issuer.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/issuer.py): the opt-in signing configuration and request-scoped `WarehouseJWTIssuer`
 - [`warehouse/jwt/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/__init__.py): JWT service registration and registry cleanup scheduling
 - [`warehouse/oidc/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/oidc/utils.py): `PublisherTokenContext`
 - [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): `AuthMethodsPredicate` and the `auth_methods_for_route` helper
@@ -347,17 +348,19 @@ issuer, audience, UTC timestamps, and normalized authorization details contain n
 request or database models. Invalid tokens return `None`; infrastructure or
 configuration failures raise. Verification does not establish a live identity
 or grant access by itself. After verification, the policy checks
-`IJWTRegistry.is_active(verified.jti)` before resolving the subject. Missing,
+`IJWTRegistry.get_active(verified.jti)` before resolving the subject. Missing,
 expired, or revoked registry entries cannot authenticate; database errors
 propagate rather than allowing access.
 
 The policy resolves the explicitly named subject kind: `user` loads a current,
 enabled user and returns `UserContext(user, None)`; `publisher` loads an existing
-OIDC publisher and returns `PublisherTokenContext(publisher, None)`. A missing
+OIDC publisher and returns `PublisherTokenContext` with the registry entry's
+`additional["oidc"]` metadata, if present. A missing
 subject never falls back to another kind, even if its UUID exists in that table.
 Publisher identities retain their `oidc:<id>` principals, not user principals.
-Filtered OIDC provenance will be added with Trusted Publisher issuance; it is
-not part of this contract yet.
+Like macaroon authentication, the publisher's filtered per-run OIDC claims are
+exposed as `request.oidc_claims`, for example to build commit-specific publisher
+URLs in upload history. They do not grant permissions and are not JWT claims.
 
 Like the macaroon policy, the JWT policy caches the identity and original
 credential, not a successful validation result. Authorization rechecks token
@@ -545,6 +548,8 @@ settings are supplied. The configuration surface for explicitly opting in is:
 | `warehouse.jwt.upload_audience` | `JWT_UPLOAD_AUDIENCE` | Exact upload audience |
 | `warehouse.jwt.api_audience` | `JWT_API_AUDIENCE` | Exact API audience, distinct from upload |
 | `warehouse.jwt.verification_keys` | `JWT_VERIFICATION_KEYS` | Mapping of key IDs to PEM RSA public-key strings; JSON in the environment variable |
+| `warehouse.jwt.signing_key_id` | `JWT_SIGNING_KEY_ID` | Optional active signing key ID; must exist in the verification key mapping |
+| `warehouse.jwt.signing_key` | `JWT_SIGNING_KEY` | Optional PEM RSA private key (unencrypted, at least 2048 bits); must match the public key for the signing key ID |
 
 When enabled, startup validates the configuration and loads the public keys
 once. Missing/invalid settings, shared upload/API audiences, private keys,
@@ -553,18 +558,54 @@ silently disabling verification. Multiple key IDs support overlapping
 verification keys during rotation. Changing settings or keys requires rebuilding
 the application configuration; no token-supplied URL or key is loaded.
 
-`warehouse.jwt` provides a database-backed registry with only a UUIDv7 `id`
-(for the JWT's `jti`) and indexed `expires_at`. Its request-scoped `IJWTRegistry`
-service registers fresh IDs, checks existence and expiration without caching,
-and revokes IDs by deleting their rows. Registration and revocation participate
+`warehouse.jwt` provides a database-backed registry with a UUIDv7 `id`
+(for the JWT's `jti`), indexed `expires_at`, and an `additional` JSONB object
+defaulting to `{}`. Its request-scoped `IJWTRegistry` service registers fresh IDs,
+fetches active entries with metadata (`get_active`), checks existence and expiration
+without loading metadata (`is_active`), and revokes IDs by deleting their rows.
+Both lookups query the database freshly, even when a row is already in the ORM
+identity map. Registration and revocation participate
 in the caller's transaction; commit before returning a token or acknowledging
 revocation. An hourly task deletes expired rows, but expiration is enforced even
-if cleanup has not run. The registry stores no claims or credentials and does not
-replace signature, audience, scope, or live resource authorization checks.
+if cleanup has not run. Metadata is set by trusted issuing code, namespaced by
+purpose, and never overrides signed claims or grants permissions. For example,
+Trusted Publisher issuance can store
+`{"oidc": publisher.stored_claims(verified_upstream_claims)}` without storing the
+upstream credential or copying this metadata into the Warehouse JWT. Cleanup
+removes metadata with the row; persist anything needed long-term in upload/event
+records. The registry does not replace signature, audience, scope, or live
+resource authorization checks.
+
+`IJWTIssuer` is a server-side signing service, not an exchange endpoint. It is
+disabled by default. Enabling verification alone does not require a private key:
+`DisabledJWTIssuer` remains registered unless `warehouse.jwt.enabled` is true and
+signing configuration is supplied. Supplying only one signing setting or an
+invalid/mismatched key fails application configuration. Private keys are loaded
+once from trusted secret configuration and must not be logged or exposed.
+
+An authorized server-side caller selects a typed `SubjectRef`, an audience name
+(`"upload"` or `"api"`, resolved through configuration), and typed authorization
+details. It can also supply registry-only `additional` metadata and a lifetime
+of 1–300 integer seconds (default 300). `WarehouseJWTIssuer` validates the profile,
+registers a new JTI, then signs with `RS256`, the configured key ID, and the
+`warehouse-api-key+jwt` type. JWT and registry expiration use the same UTC
+integer-second timestamp. The returned immutable `SignedJWT` contains `token`,
+`jti`, and `expires_at`; the service never commits. The caller must commit before
+handing out the credential and roll back on failure. Issuance itself neither
+authenticates an upstream identity nor authorizes the requested grants.
+
+For a future Trusted Publisher exchange, the caller can issue a publisher subject
+with the upload audience and an authorization detail containing
+`actions=[Permissions.ProjectsUpload]` and no resource restriction. Live publisher
+project associations still govern uploads, without enumerating projects in the
+token. Supplying project-restricted details remains supported when narrowing is
+required. Signing key rotation selects a new key ID while retaining old public
+keys long enough to verify outstanding tokens.
 
 The JWT policy enforces registry liveness at authentication and authorization;
-the cryptographic verifier remains independent of the database. Token issuance,
-the burn endpoint, and deployment activation remain follow-up work. Before
+the cryptographic verifier remains independent of the database. Opt-in JWT
+issuance through the OIDC exchange, the burn endpoint, and deployment activation
+remain follow-up work. The OIDC exchange still issues macaroons only. Before
 enabling JWT authentication in a deployment, complete those integrations and
 adapt the upload handler's macaroon-specific credential handling. User upload
 email and MFA requirements remain the upload handler's responsibility. The

@@ -89,8 +89,29 @@ class TestDatabaseJWTRegistry:
         assert first.version == second.version == 7
         assert first != second
         assert db_session.get(IssuedJWT, first).expires_at == expires_at
+        assert jwt_registry.get_active(first).additional == {}
         assert jwt_registry.is_active(first)
         assert jwt_registry.is_active(second)
+
+    def test_metadata_roundtrip(self, jwt_registry, db_session, clock):
+        additional = {"oidc": {"sha": "abc", "ref": "refs/tags/v1"}}
+        token_id = jwt_registry.register(
+            datetime.now(UTC) + timedelta(minutes=5), additional=additional
+        )
+        additional["oidc"]["sha"] = "changed"
+        db_session.flush()
+        db_session.expire_all()
+        entry = jwt_registry.get_active(token_id)
+        assert entry.additional == {"oidc": {"sha": "abc", "ref": "refs/tags/v1"}}
+        assert entry.id == token_id
+        assert entry.expires_at == datetime.now(UTC) + timedelta(minutes=5)
+
+    @pytest.mark.parametrize("additional", [[], "metadata", 1, False])
+    def test_metadata_requires_dictionary(self, jwt_registry, clock, additional):
+        with pytest.raises(ValueError, match="metadata must be a dictionary"):
+            jwt_registry.register(
+                datetime.now(UTC) + timedelta(minutes=5), additional=additional
+            )
 
     def test_register_normalizes_timezone(self, jwt_registry, db_session, clock):
         expires_at = (datetime.now(UTC) + timedelta(minutes=5)).astimezone(
@@ -132,9 +153,11 @@ class TestDatabaseJWTRegistry:
         transaction.rollback()
 
         assert not jwt_registry.is_active(token_id)
+        assert jwt_registry.get_active(token_id) is None
 
     def test_missing_is_inactive(self, jwt_registry):
         assert not jwt_registry.is_active(uuid7())
+        assert jwt_registry.get_active(uuid7()) is None
 
     @pytest.mark.parametrize(
         ("elapsed", "active"), [(299.999999, True), (300, False), (301, False)]
@@ -146,6 +169,7 @@ class TestDatabaseJWTRegistry:
         clock.tick(timedelta(seconds=elapsed))
 
         assert jwt_registry.is_active(token_id) is active
+        assert (jwt_registry.get_active(token_id) is not None) is active
         assert db_session.get(IssuedJWT, token_id) is not None
 
     def test_revoke(self, jwt_registry, db_session, clock):
@@ -159,6 +183,7 @@ class TestDatabaseJWTRegistry:
         jwt_registry.revoke(uuid7())
 
         assert not jwt_registry.is_active(token_id)
+        assert jwt_registry.get_active(token_id) is None
         assert db_session.get(IssuedJWT, token_id) is None
         assert jwt_registry.is_active(other_id)
         assert jwt_registry.register(expires_at) != token_id
@@ -182,13 +207,16 @@ class TestDatabaseJWTRegistry:
             try:
                 cached_token = reader.get(IssuedJWT, token_id)
                 assert verifier.is_active(token_id)
+                assert verifier.get_active(token_id) is cached_token
                 issuer.revoke(token_id)
                 # The other transaction cannot see an uncommitted deletion.
                 assert verifier.is_active(token_id)
+                assert verifier.get_active(token_id) is cached_token
                 writer.commit()
 
                 assert reader.get(IssuedJWT, token_id) is cached_token
                 assert not verifier.is_active(token_id)
+                assert verifier.get_active(token_id) is None
             finally:
                 reader.rollback()
                 issuer.revoke(token_id)
@@ -211,6 +239,7 @@ class TestDatabaseJWTRegistry:
         ("method", "db_method", "args"),
         [
             ("is_active", "scalar", (uuid7(),)),
+            ("get_active", "scalar", (uuid7(),)),
             ("revoke", "execute", (uuid7(),)),
             ("delete_expired", "execute", ()),
         ],

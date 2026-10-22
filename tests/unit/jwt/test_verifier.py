@@ -44,6 +44,7 @@ from warehouse.jwt.claims import (
 )
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
+from warehouse.jwt.profile import is_uuid
 from warehouse.jwt.security_policy import JWTSecurityPolicy
 from warehouse.jwt.services import (
     DatabaseJWTRegistry,
@@ -53,7 +54,6 @@ from warehouse.jwt.services import (
 from warehouse.jwt.verifier import (
     WarehouseJWTVerifier,
     WarehouseJWTVerifierFactory,
-    _is_uuid,
 )
 from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.packaging.models import LifecycleStatus, Project
@@ -74,7 +74,7 @@ NOW = 2_000_000_000
 @pytest.mark.parametrize("value", [None, True, 1, [], {}])
 def test_uuid_requires_string(value):
     # PyJWT also checks subject/JTI types; keep our canonical-ID guard independent.
-    assert not _is_uuid(value)
+    assert not is_uuid(value)
 
 
 @pytest.fixture(scope="module")
@@ -1304,6 +1304,7 @@ class TestRegisteredJWTPolicy:
         request = make_request("/legacy/?:action=file_upload", token)
         registry = request.find_service(IJWTRegistry, context=None)
         active_check = mocker.spy(registry, "is_active")
+        entry_check = mocker.spy(registry, "get_active")
         verifier = request.find_service(IJWTVerifier, context=None)
         verify = mocker.spy(verifier, "verify")
 
@@ -1316,7 +1317,8 @@ class TestRegisteredJWTPolicy:
         assert request.has_permission(Permissions.ProjectsUpload, project)
         # Authentication plus four API_KEY permission checks; AccountManage is
         # denied by the method allowlist without needing credential validation.
-        assert active_check.call_args_list == [mocker.call(registered_jti)] * 5
+        entry_check.assert_called_once_with(registered_jti)
+        assert active_check.call_args_list == [mocker.call(registered_jti)] * 4
         assert verify.call_args_list == [mocker.call(token)] * 5
 
     @pytest.mark.parametrize("state", ["missing", "expired", "revoked"])
@@ -1342,7 +1344,7 @@ class TestRegisteredJWTPolicy:
 
         request = make_request("/legacy/?:action=file_upload", sign())
         registry = request.find_service(IJWTRegistry, context=None)
-        active_check = mocker.spy(registry, "is_active")
+        active_check = mocker.spy(registry, "get_active")
         assert request.identity is None
         assert not request.has_permission(Permissions.ProjectsUpload, project)
         assert not hasattr(request, "authentication_method")
@@ -1373,8 +1375,10 @@ class TestRegisteredJWTPolicy:
             "/legacy/?:action=file_upload", sign(key=signing_keys[1])
         )
         registry = request.find_service(IJWTRegistry, context=None)
+        entry_check = mocker.spy(registry, "get_active")
         active_check = mocker.spy(registry, "is_active")
         assert request.identity is None
+        entry_check.assert_not_called()
         active_check.assert_not_called()
 
     @pytest.mark.parametrize("expiration", ["token", "registry"])
@@ -1408,7 +1412,7 @@ class TestRegisteredJWTPolicy:
         assert result.reason == "invalid_api_key"
         # Expired JWTs fail verification before consulting the registry again.
         assert active_check.call_args_list == [mocker.call(registered_jti)] * (
-            2 if expiration == "registry" else 1
+            1 if expiration == "registry" else 0
         )
 
         fresh_request = make_request("/legacy/?:action=file_upload", token)
@@ -1448,7 +1452,7 @@ class TestRegisteredJWTPolicy:
                 assert not result
                 assert result.reason == "invalid_api_key"
                 assert active_check.call_args_list == [mocker.call(token_id)] * (
-                    3 if already_authorized else 2
+                    2 if already_authorized else 1
                 )
 
                 fresh_request = make_request("/legacy/?:action=file_upload", token)

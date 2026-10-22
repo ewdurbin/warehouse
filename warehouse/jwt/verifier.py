@@ -24,10 +24,14 @@ from warehouse.jwt.claims import (
     VerifiedJWT,
 )
 from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.jwt.profile import (
+    MAX_LIFETIME_SECONDS,
+    MEDIA_TYPE,
+    is_uuid,
+    valid_authorization_details,
+)
 from warehouse.jwt.services import DisabledJWTVerifier
 
-_MEDIA_TYPE = "warehouse-api-key+jwt"
-_MAX_LIFETIME_SECONDS = 300
 _REQUIRED_CLAIMS = {
     "iss",
     "aud",
@@ -37,11 +41,6 @@ _REQUIRED_CLAIMS = {
     "iat",
     "exp",
     "authorization_details",
-}
-_ACTION_RESOURCES = {
-    Permissions.ProjectsUpload: (ResourceKind.PROJECT,),
-    Permissions.APIEcho: (),
-    Permissions.APIObservationsAdd: (ResourceKind.PROJECT,),
 }
 
 
@@ -105,16 +104,6 @@ class WarehouseJWTVerifierFactory:
         return DisabledJWTVerifier()
 
 
-def _is_uuid(value) -> bool:
-    """Require the canonical string representation of a Warehouse ID."""
-    if not isinstance(value, str):
-        return False
-    try:
-        return str(UUID(value)) == value
-    except ValueError:
-        return False
-
-
 @implementer(IJWTVerifier)
 class WarehouseJWTVerifier:
     """Verify Warehouse-issued, explicitly scoped API keys.
@@ -155,7 +144,7 @@ class WarehouseJWTVerifier:
             if (
                 set(header) != {"alg", "kid", "typ"}
                 or header["alg"] != "RS256"
-                or header["typ"] != _MEDIA_TYPE
+                or header["typ"] != MEDIA_TYPE
                 or not isinstance(header["kid"], str)
             ):
                 return None
@@ -193,44 +182,14 @@ class WarehouseJWTVerifier:
         if "nbf" in claims and type(claims["nbf"]) is not int:
             return None
         # Bound the issued lifetime, not the time remaining or the nbf window.
-        if not 0 < claims["exp"] - claims["iat"] <= _MAX_LIFETIME_SECONDS:
+        if not 0 < claims["exp"] - claims["iat"] <= MAX_LIFETIME_SECONDS:
             return None
-        if not _is_uuid(claims["sub"]) or not _is_uuid(claims["jti"]):
+        if not is_uuid(claims["sub"]) or not is_uuid(claims["jti"]):
             return None
         if claims["subject_kind"] not in (SubjectKind.USER, SubjectKind.PUBLISHER):
             return None
-        details = claims["authorization_details"]
-        if not isinstance(details, list) or not details:
+        if not valid_authorization_details(claims["authorization_details"]):
             return None
-        for detail in details:
-            if not isinstance(detail, dict) or set(detail) not in (
-                {"type", "actions"},
-                {"type", "actions", "identifier"},
-            ):
-                return None
-            if detail["type"] != AuthorizationType.WAREHOUSE:
-                return None
-            actions = detail["actions"]
-            if (
-                not isinstance(actions, list)
-                or not actions
-                or any(
-                    not isinstance(action, str) or action not in _ACTION_RESOURCES
-                    for action in actions
-                )
-            ):
-                return None
-            if "identifier" in detail:
-                # Only absence means unrestricted by resource. Null, unknown or
-                # malformed identifiers must never silently broaden the token.
-                identifier = detail["identifier"]
-                if not isinstance(identifier, str):
-                    return None
-                kind, _, resource_id = identifier.partition(":")
-                if not _is_uuid(resource_id) or any(
-                    kind not in _ACTION_RESOURCES[action] for action in actions
-                ):
-                    return None
         return claims
 
     def verify(self, token: str) -> VerifiedJWT | None:

@@ -67,7 +67,8 @@ class JWTSecurityPolicy:
             return None
 
         registry = request.find_service(IJWTRegistry, context=None)
-        if not registry.is_active(verified.jti):
+        entry = registry.get_active(verified.jti)
+        if entry is None:
             return None
 
         # Resolve only the explicitly named kind. A UUID missing from one table
@@ -85,7 +86,9 @@ class JWTSecurityPolicy:
             publisher = request.db.get(OIDCPublisher, verified.subject.id)
             if publisher is None:
                 return None
-            identity = PublisherTokenContext(publisher, claims=None)
+            identity = PublisherTokenContext(
+                publisher, claims=entry.additional.get("oidc")
+            )
         else:
             return None
 

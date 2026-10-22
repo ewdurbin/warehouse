@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from zope.interface import Interface
 
-from warehouse.jwt.claims import VerifiedJWT
+from warehouse.jwt.claims import AuthorizationDetail, SignedJWT, SubjectRef, VerifiedJWT
+from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
+
+if TYPE_CHECKING:
+    from warehouse.jwt.models import IssuedJWT
 
 
 class IJWTVerifier(Interface):
@@ -35,6 +42,28 @@ class IJWTVerifier(Interface):
         """
 
 
+class IJWTIssuer(Interface):
+    def issue(
+        *,
+        subject: SubjectRef,
+        audience: str,
+        authorization_details: tuple[AuthorizationDetail, ...],
+        lifetime: int = MAX_LIFETIME_SECONDS,
+        additional: dict | None = None,
+    ) -> SignedJWT:
+        """Register and sign a credential using trusted, authorized inputs.
+
+        The caller authorizes issuance and selects the subject, configured
+        audience name (not a client-supplied URI), and authorization details.
+        Lifetime is an integer number of seconds, at most five minutes.
+        Filtered per-issuance metadata stays in the registry, not the JWT.
+
+        Mutations participate in the caller's transaction: commit before handing
+        out the credential; roll back on failure. This service never commits.
+        Invalid inputs, disabled issuance, and infrastructure errors raise.
+        """
+
+
 class IJWTRegistry(Interface):
     """Track issued JWTs independently of their claims or authenticated identity.
 
@@ -43,11 +72,20 @@ class IJWTRegistry(Interface):
     Database failures must propagate, never become successful validity checks.
     """
 
-    def register(expires_at: datetime) -> UUID:
+    def register(expires_at: datetime, *, additional: dict | None = None) -> UUID:
         """Register a fresh JTI with a future, timezone-aware expiration.
 
         Lifetime limits belong to the issuing/verifying JWT profile. IDs are
         generated here, not supplied by callers, and must never be reused.
+        Additional JSON metadata comes from trusted issuing code, is set at
+        issuance, and must never override signed claims or grant permissions.
+        """
+
+    def get_active(token_id: UUID) -> IssuedJWT | None:
+        """Fetch a fresh, unexpired entry including its per-issuance metadata.
+
+        Return None for missing, expired, or revoked IDs. Like is_active, this
+        requires prior signature verification and does not authorize access.
         """
 
     def is_active(token_id: UUID) -> bool:
