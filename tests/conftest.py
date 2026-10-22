@@ -84,6 +84,7 @@ from .common.db import Session
 from .common.db.accounts import EmailFactory, UserFactory
 from .common.db.ip_addresses import IpAddressFactory
 from .common.forms import FormRequest
+from .common.jwt import API_AUDIENCE, ISSUER, UPLOAD_AUDIENCE
 
 _HERE = Path(__file__).parent.resolve()
 _FIXTURES = _HERE / "_fixtures"
@@ -565,9 +566,9 @@ def warehouse_jwt_signer(warehouse_jwt_key):
 @pytest.fixture
 def warehouse_jwt_settings(warehouse_jwt_key):
     return {
-        "warehouse.jwt.issuer": "https://warehouse.example",
-        "warehouse.jwt.upload_audience": "https://warehouse.example/upload",
-        "warehouse.jwt.api_audience": "https://warehouse.example/api",
+        "warehouse.jwt.issuer": ISSUER,
+        "warehouse.jwt.upload_audience": UPLOAD_AUDIENCE,
+        "warehouse.jwt.api_audience": API_AUDIENCE,
         "warehouse.jwt.signing_key_id": "current",
         "warehouse.jwt.kms_key_id": "alias/pypi-access",
         "warehouse.jwt.verification_keys": {
