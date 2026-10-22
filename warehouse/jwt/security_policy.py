@@ -42,7 +42,7 @@ def _extract_http_jwt(request):
 
 @implementer(ISecurityPolicy)
 class JWTSecurityPolicy:
-    """Authenticate JWT-backed API keys on explicitly opted-in routes."""
+    """Authenticate JWTs on explicitly opted-in routes."""
 
     def __init__(self):
         self._acl = ACLHelper()
@@ -113,7 +113,7 @@ class JWTSecurityPolicy:
             permission, AuthenticationMethod.JWT
         ):
             return WarehouseDenied(
-                f"API keys are not valid for permission: {permission}!",
+                f"JWTs are not valid for permission: {permission}!",
                 reason="invalid_permission",
             )
 
@@ -129,8 +129,8 @@ class JWTSecurityPolicy:
             )
         ):
             return WarehouseDenied(
-                "Invalid or insufficiently scoped API key",
-                reason="invalid_api_key",
+                "Invalid or insufficiently scoped JWT",
+                reason="invalid_jwt",
             )
 
         return self._acl.permits(context, principals_for(request.identity), permission)

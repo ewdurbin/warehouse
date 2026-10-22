@@ -189,7 +189,7 @@ class TestJWTSecurityPolicy:
     @pytest.mark.parametrize(
         "permission", [Permissions.AccountManage, Permissions.AdminUsersRead, "unknown"]
     )
-    def test_denies_non_api_key_permissions(
+    def test_denies_non_jwt_permissions(
         self,
         grant_check,
         verified,
@@ -217,7 +217,7 @@ class TestJWTSecurityPolicy:
         context = types.SimpleNamespace()
         result = jwt_request.has_permission(Permissions.APIEcho, context)
         assert not result
-        assert result.reason == "invalid_api_key"
+        assert result.reason == "invalid_jwt"
         grant_check.assert_called_once_with(
             verified, jwt_request.identity, context, Permissions.APIEcho
         )
@@ -396,7 +396,7 @@ class TestJWTSecurityPolicy:
             Permissions.APIEcho, types.SimpleNamespace()
         )
         assert not result
-        assert result.reason == "invalid_api_key"
+        assert result.reason == "invalid_jwt"
         # Only authentication consulted the registry: reverification failed first.
         registry.get_active.assert_called_once_with(verified.jti)
         registry.is_active.assert_not_called()
@@ -420,7 +420,7 @@ class TestJWTSecurityPolicy:
             Permissions.APIEcho, types.SimpleNamespace()
         )
         assert not result
-        assert result.reason == "invalid_api_key"
+        assert result.reason == "invalid_jwt"
         registry.get_active.assert_called_once_with(verified.jti)
         registry.is_active.assert_called_once_with(verified.jti)
         grant_check.assert_not_called()

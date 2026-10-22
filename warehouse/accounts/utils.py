@@ -27,7 +27,7 @@ class UserContext:
     """
     It is a wrapper containing both a user associated with an authenticated request
     and an optional corresponding Macaroon, if the authentication was via API token.
-    If authentication used a login session or JWT-backed API key, `macaroon` is None.
+    If authentication used a login session or JWT, `macaroon` is None.
     """
 
     user: User
