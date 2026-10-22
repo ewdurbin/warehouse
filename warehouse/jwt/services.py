@@ -11,12 +11,45 @@ from pyramid.exceptions import ConfigurationError
 from sqlalchemy import delete, select
 from zope.interface import implementer
 
-from warehouse.jwt.claims import VerifiedJWT
-from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
+from warehouse.jwt.claims import AuthorizationDetail, SignedJWT, SubjectRef, VerifiedJWT
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTVerifier
+from warehouse.jwt.issuer import WarehouseJWTIssuerFactory
 from warehouse.jwt.models import IssuedJWT
+from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
 from warehouse.jwt.verifier import WarehouseJWTVerifier
 from warehouse.predicates import auth_methods_for_route, jwt_audience_for_route
 from warehouse.utils.security_policy import AuthenticationMethod
+
+
+def jwt_issuer_factory(settings):
+    """Validate signing settings if either key ID is configured."""
+    if not any(
+        name in settings
+        for name in ("warehouse.jwt.kms_key_id", "warehouse.jwt.signing_key_id")
+    ):
+        return DisabledJWTIssuer.create_service
+
+    return WarehouseJWTIssuerFactory.from_settings(settings)
+
+
+@implementer(IJWTIssuer)
+class DisabledJWTIssuer:
+    enabled = False
+
+    @classmethod
+    def create_service(cls, context, request):
+        return cls()
+
+    def issue(
+        self,
+        *,
+        subject: SubjectRef,
+        audience: str,
+        authorization_details: tuple[AuthorizationDetail, ...],
+        lifetime: int = MAX_LIFETIME_SECONDS,
+        additional: dict | None = None,
+    ) -> SignedJWT:
+        raise RuntimeError("JWT issuance is disabled")
 
 
 @implementer(IJWTVerifier)

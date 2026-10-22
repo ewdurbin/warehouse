@@ -6,9 +6,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from zope.interface import Interface
+from zope.interface import Attribute, Interface
 
-from warehouse.jwt.claims import VerifiedJWT
+from warehouse.jwt.claims import AuthorizationDetail, SignedJWT, SubjectRef, VerifiedJWT
+from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
 
 if TYPE_CHECKING:
     from warehouse.jwt.models import IssuedJWT
@@ -30,6 +31,29 @@ class IJWTSigner(Interface):
         The signer sets the algorithm, token type, and key ID. The caller
         validates the claims and handles registration and authorization.
         If signing fails with the configured key, raise the error.
+        """
+
+
+class IJWTIssuer(Interface):
+    enabled = Attribute("Whether new JWTs can be issued with this configuration")
+
+    def issue(
+        *,
+        subject: SubjectRef,
+        audience: str,
+        authorization_details: tuple[AuthorizationDetail, ...],
+        lifetime: int = MAX_LIFETIME_SECONDS,
+        additional: dict | None = None,
+    ) -> SignedJWT:
+        """Register and sign a credential using trusted, authorized inputs.
+
+        The caller authorizes issuance and selects the subject, configured
+        audience label, and authorization details. The lifetime is an integer
+        from 1 to 300 seconds. The registry holds any additional metadata.
+
+        The caller owns the transaction. Commit before handing out the token
+        and roll back on failure. Raise if issuance is disabled, inputs are
+        invalid, or a service fails.
         """
 
 
