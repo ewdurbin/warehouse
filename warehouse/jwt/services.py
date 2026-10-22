@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
 
+from pyramid.settings import asbool
 from sqlalchemy import delete, exists, select
 from zope.interface import implementer
 
@@ -92,3 +93,14 @@ class DatabaseJWTRegistry:
             .execution_options(synchronize_session=False)
         )
         return result.rowcount
+
+
+def jwt_verifier_factory(settings):
+    """Configure the request factory once, keeping JWT authentication opt-in."""
+    if not asbool(settings.get("warehouse.jwt.enabled", False)):
+        return DisabledJWTVerifier.create_service
+
+    # The verifier factory also imports DisabledJWTVerifier from this module.
+    from warehouse.jwt.verifier import WarehouseJWTVerifierFactory  # noqa: PLC0415
+
+    return WarehouseJWTVerifierFactory(settings)

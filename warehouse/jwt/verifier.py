@@ -7,7 +7,10 @@ from uuid import UUID
 
 import jwt
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from pyramid.exceptions import ConfigurationError
 from zope.interface import implementer
 
 from warehouse.authnz import Permissions
@@ -27,6 +30,7 @@ from warehouse.jwt.profile import (
     is_uuid,
     valid_authorization_details,
 )
+from warehouse.jwt.services import DisabledJWTVerifier
 
 _REQUIRED_CLAIMS = {
     "iss",
@@ -38,6 +42,66 @@ _REQUIRED_CLAIMS = {
     "exp",
     "authorization_details",
 }
+
+
+class WarehouseJWTVerifierFactory:
+    """Load trusted configuration once; select a verifier from the matched route.
+
+    Neither token claims nor request host/path/headers determine the audience.
+    Routes must explicitly declare a jwt_audience and opt into API_KEY.
+    """
+
+    def __init__(self, settings):
+        issuer = settings.get("warehouse.jwt.issuer")
+        audiences = {
+            name: settings.get(f"warehouse.jwt.{name}_audience")
+            for name in ("upload", "api")
+        }
+        if audiences["upload"] == audiences["api"]:
+            raise ConfigurationError("JWT upload and API audiences must be distinct")
+        configured_keys = settings.get("warehouse.jwt.verification_keys")
+        if not isinstance(configured_keys, Mapping) or not configured_keys:
+            raise ConfigurationError(
+                "warehouse.jwt.verification_keys must map key IDs to PEM public keys"
+            )
+        keys = {}
+        for kid, pem in configured_keys.items():
+            if not isinstance(pem, str):
+                raise ConfigurationError("JWT verification keys must be PEM strings")
+            try:
+                keys[kid] = load_pem_public_key(pem.encode("utf-8"))
+            except (ValueError, UnsupportedAlgorithm) as exc:
+                raise ConfigurationError("Invalid JWT PEM public key") from exc
+        try:
+            self._verifiers = {
+                name: WarehouseJWTVerifier(issuer=issuer, audience=audience, keys=keys)
+                for name, audience in audiences.items()
+            }
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
+
+    def __call__(self, context, request):
+        # Route metadata imports account/organization models. Keep that dependency
+        # at request-time so the verifier can also be imported before app setup.
+        from warehouse.predicates import (  # noqa: PLC0415
+            auth_methods_for_route,
+            jwt_audience_for_route,
+        )
+        from warehouse.utils.security_policy import (  # noqa: PLC0415
+            AuthenticationMethod,
+        )
+
+        route = request.matched_route
+        if route is not None:
+            methods = auth_methods_for_route(route)
+            audience_name = jwt_audience_for_route(route)
+            if (
+                audience_name is not None
+                and methods is not None
+                and AuthenticationMethod.API_KEY in methods
+            ):
+                return self._verifiers[audience_name]
+        return DisabledJWTVerifier()
 
 
 @implementer(IJWTVerifier)
