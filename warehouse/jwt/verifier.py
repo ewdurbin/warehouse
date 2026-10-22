@@ -80,6 +80,15 @@ class WarehouseJWTVerifierFactory:
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc
 
+    def for_audience(self, name):
+        """Bind an internal caller, such as token burning, to a trusted audience.
+
+        This does not opt a route into JWT authentication. The name must be
+        selected by server code, never by a submitted token or request field.
+        """
+        verifier = self._verifiers[name]
+        return lambda context, request: verifier
+
     def __call__(self, context, request):
         # Route metadata imports account/organization models. Keep that dependency
         # at request-time so the verifier can also be imported before app setup.
