@@ -7,6 +7,7 @@ from pyramid.settings import asbool
 from sqlalchemy import delete, exists, select
 from zope.interface import implementer
 
+from warehouse.jwt.claims import VerifiedJWT
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
 
@@ -16,7 +17,7 @@ def jwt_verifier_factory(settings):
     if not asbool(settings.get("warehouse.jwt.enabled", False)):
         return DisabledJWTVerifier.create_service
 
-    # Defer the verifier's account/packaging imports until configuration time.
+    # The verifier factory also imports DisabledJWTVerifier from this module.
     from warehouse.jwt.verifier import WarehouseJWTVerifierFactory  # noqa: PLC0415
 
     return WarehouseJWTVerifierFactory(settings)
@@ -30,11 +31,8 @@ class DisabledJWTVerifier:
     def create_service(cls, context, request):
         return cls()
 
-    def verify(self, token: str) -> str | None:
+    def verify(self, token: str) -> VerifiedJWT | None:
         return None
-
-    def permits(self, token: str, request, context, permission) -> bool:
-        return False
 
 
 @implementer(IJWTRegistry)

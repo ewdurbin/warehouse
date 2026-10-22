@@ -39,7 +39,6 @@ class TestDisabledJWTVerifier:
     def test_rejects_all_tokens(self, token):
         verifier = DisabledJWTVerifier()
         assert verifier.verify(token) is None
-        assert not verifier.permits(token, None, None, Permissions.ProjectsUpload)
 
     def test_service_factory(self):
         with testing.testConfig() as config:

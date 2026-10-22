@@ -2,6 +2,8 @@
 
 import types
 
+from dataclasses import replace
+
 import pytest
 
 from pyramid import testing
@@ -14,8 +16,11 @@ from zope.interface.verify import verifyClass
 from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.utils import UserContext
 from warehouse.authnz import Permissions
+from warehouse.jwt.claims import SubjectKind, SubjectRef
 from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.security_policy import JWTSecurityPolicy, _extract_http_jwt
+from warehouse.oidc.models import OIDCPublisher
+from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.predicates import AuthMethodsPredicate
 from warehouse.utils.security_policy import AuthenticationMethod, MultiSecurityPolicy
 
@@ -24,10 +29,16 @@ TOKEN = "header.payload.signature"
 
 @pytest.fixture
 def verifier(mocker):
-    service = mocker.Mock(spec=["verify", "permits"])
+    service = mocker.Mock(spec=["verify"])
     service.verify.return_value = None
-    service.permits.return_value = False
     return service
+
+
+@pytest.fixture(autouse=True)
+def grant_check(mocker):
+    return mocker.patch(
+        "warehouse.jwt.security_policy.authorization.permits", return_value=False
+    )
 
 
 @pytest.fixture
@@ -130,21 +141,21 @@ class TestJWTSecurityPolicy:
         user_service.get_user.assert_not_called()
         assert not hasattr(jwt_request, "authentication_method")
 
-    def test_deleted_user(self, jwt_request, verifier, user_service, user):
-        verifier.verify.return_value = user.id
+    def test_deleted_user(self, verified, jwt_request, verifier, user_service, user):
+        verifier.verify.return_value = verified
         user_service.get_user.return_value = None
         assert jwt_request.identity is None
         user_service.get_user.assert_called_once_with(user.id)
         user_service.is_disabled.assert_not_called()
 
-    def test_disabled_user(self, jwt_request, verifier, user_service, user):
-        verifier.verify.return_value = user.id
+    def test_disabled_user(self, verified, jwt_request, verifier, user_service, user):
+        verifier.verify.return_value = verified
         user_service.is_disabled.return_value = (True, "disabled")
         assert jwt_request.identity is None
         user_service.is_disabled.assert_called_once_with(user.id)
 
-    def test_verified_user(self, jwt_request, verifier, user_service, user):
-        verifier.verify.return_value = user.id
+    def test_verified_user(self, verified, jwt_request, verifier, user_service, user):
+        verifier.verify.return_value = verified
         assert jwt_request.identity == UserContext(user, macaroon=None)
         assert jwt_request.authenticated_userid == user.id
         assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
@@ -163,28 +174,36 @@ class TestJWTSecurityPolicy:
         "permission", [Permissions.AccountManage, Permissions.AdminUsersRead, "unknown"]
     )
     def test_denies_non_api_key_permissions(
-        self, permission, jwt_request, verifier, user, policy, mocker
+        self,
+        grant_check,
+        verified,
+        permission,
+        jwt_request,
+        verifier,
+        user,
+        policy,
+        mocker,
     ):
-        verifier.verify.return_value = user.id
-        verifier.permits.return_value = True
+        verifier.verify.return_value = verified
+        grant_check.return_value = True
         acl = mocker.spy(policy._acl, "permits")
         result = jwt_request.has_permission(permission, types.SimpleNamespace())
         assert not result
         assert result.reason == "invalid_permission"
-        verifier.permits.assert_not_called()
+        grant_check.assert_not_called()
         acl.assert_not_called()
 
     def test_denies_token_restrictions(
-        self, jwt_request, verifier, user, policy, mocker
+        self, grant_check, verified, jwt_request, verifier, user, policy, mocker
     ):
-        verifier.verify.return_value = user.id
+        verifier.verify.return_value = verified
         acl = mocker.spy(policy._acl, "permits")
         context = types.SimpleNamespace()
         result = jwt_request.has_permission(Permissions.APIEcho, context)
         assert not result
         assert result.reason == "invalid_api_key"
-        verifier.permits.assert_called_once_with(
-            TOKEN, jwt_request, context, Permissions.APIEcho
+        grant_check.assert_called_once_with(
+            verified, jwt_request.identity, context, Permissions.APIEcho
         )
         acl.assert_not_called()
 
@@ -198,27 +217,30 @@ class TestJWTSecurityPolicy:
     )
     @pytest.mark.parametrize("principal", ["user:test", "user:someone-else"])
     def test_requires_acl_and_token_permission(
-        self, permission, principal, jwt_request, verifier, user
+        self, grant_check, verified, permission, principal, jwt_request, verifier, user
     ):
-        verifier.verify.return_value = user.id
-        verifier.permits.return_value = True
+        verifier.verify.return_value = verified
+        grant_check.return_value = True
         context = types.SimpleNamespace(__acl__=[(Allow, principal, permission)])
         assert bool(jwt_request.has_permission(permission, context)) == (
             principal == "user:test"
         )
 
-    def test_authorizes_the_original_credential(self, jwt_request, verifier, user):
-        verifier.verify.return_value = user.id
-        verifier.permits.return_value = True
+    def test_authorizes_the_original_credential(
+        self, grant_check, verified, jwt_request, verifier, user, mocker
+    ):
+        verifier.verify.return_value = verified
+        grant_check.return_value = True
         assert jwt_request.identity == UserContext(user, macaroon=None)
         jwt_request.headers["Authorization"] = "Bearer different.token.signature"
         context = types.SimpleNamespace(
             __acl__=[(Allow, "user:test", Permissions.APIEcho)]
         )
         assert jwt_request.has_permission(Permissions.APIEcho, context)
-        verifier.verify.assert_called_once_with(TOKEN)
-        verifier.permits.assert_called_once_with(
-            TOKEN, jwt_request, context, Permissions.APIEcho
+        assert verifier.verify.call_count == 2
+        verifier.verify.assert_has_calls([mocker.call(TOKEN), mocker.call(TOKEN)])
+        grant_check.assert_called_once_with(
+            verified, jwt_request.identity, context, Permissions.APIEcho
         )
 
     def test_verifier_error_does_not_authenticate(self, jwt_request, verifier):
@@ -226,9 +248,11 @@ class TestJWTSecurityPolicy:
         with pytest.raises(RuntimeError, match="verifier unavailable"):
             _ = jwt_request.identity
 
-    def test_authorization_error_does_not_allow(self, jwt_request, verifier, user):
-        verifier.verify.return_value = user.id
-        verifier.permits.side_effect = RuntimeError("verifier unavailable")
+    def test_authorization_error_does_not_allow(
+        self, grant_check, verified, jwt_request, verifier, user
+    ):
+        verifier.verify.return_value = verified
+        grant_check.side_effect = RuntimeError("verifier unavailable")
         with pytest.raises(RuntimeError, match="verifier unavailable"):
             jwt_request.has_permission(Permissions.APIEcho, types.SimpleNamespace())
 
@@ -242,3 +266,80 @@ class TestJWTSecurityPolicy:
             Permissions.APIEcho, types.SimpleNamespace()
         )
         verifier.verify.assert_not_called()
+
+    @pytest.mark.parametrize("kind", ["organization", "project", None])
+    def test_unsupported_subject(
+        self, jwt_request, verifier, verified, user_service, kind, mocker
+    ):
+        jwt_request.db = mocker.Mock()
+        verifier.verify.return_value = replace(
+            verified, subject=SubjectRef(kind, verified.subject.id)
+        )
+        assert jwt_request.identity is None
+        user_service.get_user.assert_not_called()
+        jwt_request.db.get.assert_not_called()
+        assert not hasattr(jwt_request, "authentication_method")
+
+    def test_missing_user_never_resolves_as_publisher(
+        self, jwt_request, verifier, verified, user_service, mocker
+    ):
+        verifier.verify.return_value = verified
+        user_service.get_user.return_value = None
+        jwt_request.db = mocker.Mock()
+        assert jwt_request.identity is None
+        jwt_request.db.get.assert_not_called()
+
+    @pytest.mark.parametrize("exists", [False, True])
+    def test_publisher_identity(
+        self, jwt_request, verifier, verified, user_service, mocker, exists
+    ):
+        subject = SubjectRef(SubjectKind.PUBLISHER, verified.subject.id)
+        verifier.verify.return_value = replace(verified, subject=subject)
+        publisher = types.SimpleNamespace(id=subject.id) if exists else None
+        jwt_request.db = mocker.Mock()
+        jwt_request.db.get.return_value = publisher
+
+        assert jwt_request.identity == (
+            PublisherTokenContext(publisher, claims=None) if exists else None
+        )
+        assert jwt_request.authenticated_userid is None
+        jwt_request.db.get.assert_called_once_with(OIDCPublisher, subject.id)
+        user_service.get_user.assert_not_called()
+        user_service.is_disabled.assert_not_called()
+        if exists:
+            assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
+            assert jwt_request.identity.__principals__() == [
+                Authenticated,
+                f"oidc:{subject.id}",
+            ]
+        else:
+            assert not hasattr(jwt_request, "authentication_method")
+
+    def test_publisher_lookup_failure_propagates(
+        self, jwt_request, verifier, verified, mocker
+    ):
+        verifier.verify.return_value = replace(
+            verified, subject=SubjectRef(SubjectKind.PUBLISHER, verified.subject.id)
+        )
+        jwt_request.db = mocker.Mock()
+        jwt_request.db.get.side_effect = RuntimeError("database unavailable")
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            _ = jwt_request.identity
+
+    def test_reverification_failure_denies(
+        self, jwt_request, verifier, verified, grant_check, policy, mocker
+    ):
+        verifier.verify.side_effect = [verified, None]
+        acl = mocker.spy(policy._acl, "permits")
+        result = jwt_request.has_permission(
+            Permissions.APIEcho, types.SimpleNamespace()
+        )
+        assert not result
+        assert result.reason == "invalid_api_key"
+        grant_check.assert_not_called()
+        acl.assert_not_called()
+
+    def test_reverification_error_propagates(self, jwt_request, verifier, verified):
+        verifier.verify.side_effect = [verified, RuntimeError("verifier unavailable")]
+        with pytest.raises(RuntimeError, match="verifier unavailable"):
+            jwt_request.has_permission(Permissions.APIEcho, types.SimpleNamespace())

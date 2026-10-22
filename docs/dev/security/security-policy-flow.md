@@ -342,19 +342,31 @@ so authorization uses the same token that established the identity.
 
 `IJWTVerifier.verify(token)` must validate the signature, trusted issuer and
 keys, allowed algorithm, audience, token purpose, required claims, and time
-bounds before returning a Warehouse user ID. Invalid tokens return `None`;
-infrastructure or configuration failures raise. The policy loads the current
-user, rejects missing or disabled accounts, and returns `UserContext(user, None)`.
+bounds before returning an immutable `VerifiedJWT`. Its typed subject, JTI,
+issuer, audience, UTC timestamps, and normalized authorization details contain no
+request or database models. Invalid tokens return `None`; infrastructure or
+configuration failures raise. Verification does not establish a live identity
+or grant access by itself.
+
+The policy resolves the explicitly named subject kind: `user` loads a current,
+enabled user and returns `UserContext(user, None)`; `publisher` loads an existing
+OIDC publisher and returns `PublisherTokenContext(publisher, None)`. A missing
+subject never falls back to another kind, even if its UUID exists in that table.
+Publisher identities retain their `oidc:<id>` principals, not user principals.
+Filtered OIDC provenance will be added with Trusted Publisher issuance; it is
+not part of this contract yet.
 
 Authorization requires all three gates to pass, in order:
 
 1. The `API_KEY` authentication-method permission allowlist.
-2. `IJWTVerifier.permits(token, request, context, permission)`, which enforces
-   token validity, subject binding, scopes, and resource restrictions.
-3. The existing resource ACL evaluated with the user's current principals.
+2. Fresh verification of the original token, followed by
+   `warehouse.jwt.authorization.permits`, which binds the subject kind and ID
+   to the resolved identity and checks the requested permission and any resource
+   narrowing attached to the same authorization details object.
+3. The existing resource ACL evaluated with the identity's current principals.
 
-The default `DisabledJWTVerifier` returns `None` from `verify` and `False` from
-`permits`. `WarehouseJWTVerifier` implements the following initial
+The default `DisabledJWTVerifier` always returns `None` from `verify`.
+`WarehouseJWTVerifier` implements the following initial
 Warehouse-issued token profile, but requires explicit configuration to enable:
 
 - JOSE headers are exactly `alg`, `typ`, and `kid`. The algorithm is fixed to
@@ -363,7 +375,9 @@ Warehouse-issued token profile, but requires explicit configuration to enable:
   2048 bits. Tokens cannot supply keys, key URLs, or JOSE extensions.
 - `iss` and `aud` must exactly match the issuer and single audience supplied
   to the verifier. Audience arrays are rejected. `sub` is a canonical Warehouse
-  user UUID, not a username or publisher identity.
+  UUID and the required `subject_kind` is either `user` or `publisher`.
+- `jti` is a required canonical UUID identifying the issued credential. Issuance
+  will use the registry's UUIDv7 IDs; this claim alone does not prove registration.
 - `iat` and `exp` are required integer NumericDates. Optional `nbf` is also an
   integer. Future issuance/not-before times and expired tokens are rejected,
   with no clock-skew allowance. The issued lifetime must satisfy
@@ -371,21 +385,97 @@ Warehouse-issued token profile, but requires explicit configuration to enable:
   is rejected even in its final five minutes. `nbf` does not shorten the issued
   lifetime for this check. The verifier rechecks validity on every authorization
   call, even if request identity has already been cached.
-- `permissions` is a required, nonempty array containing only
-  `projects:upload`, `api:echo`, and/or `api:observations:add`.
-- `project_ids` is a required array of canonical project UUIDs. Upload and
-  observation permissions require a `Project` context with an ID in this list.
-  An empty list grants no project access; echo does not need a project.
-- Unknown claims, wildcard permissions, and wildcard project grants are
-  rejected. In particular, this profile cannot authorize first-time project
-  creation or grant account-wide upload access.
+- `authorization_details` is a required, nonempty array, using the JWT claim
+  described by [RFC 9396 section 9.1](https://www.rfc-editor.org/rfc/rfc9396.html#section-9.1).
+  Warehouse defines a small profile of its
+  [common fields](https://www.rfc-editor.org/rfc/rfc9396.html#section-2.2):
+
+    - `type` is required and must be exactly `"warehouse"`. It identifies this
+      authorization profile, not the subject kind or token audience.
+    - `actions` is a required, nonempty array containing only `projects:upload`,
+      `api:observations:add`, and/or `api:echo`.
+    - `identifier` is optional. If absent, there is no token-level resource
+      restriction on these actions. If present, it must be
+      `"project:<canonical UUID>"` and narrows **every action in this object**
+      to that project. This is supported for uploads and observations, not echo.
+      Null, empty, wildcard, malformed, and unsupported identifiers are rejected,
+      never treated as absent.
+
+  The type value, action vocabulary, identifier syntax, and meaning of an absent
+  identifier are Warehouse conventions, not prescribed by the RFC.
+- Authorization still requires the subject's live ACL privileges. Uploads and
+  observations require an actual `Project` context, regardless of whether the
+  token names a project. Observations can target any project when the subject
+  has observer privileges; being an owner, maintainer, or Trusted Publisher does
+  not confer those privileges.
+- Objects are additive. Each object's identifier restricts only its own actions:
+  upload on project A plus observations on project B does not permit upload on B.
+  A narrowed object does not constrain another object with the same action and
+  no identifier. To issue a narrower token, omit that broader authorization.
+- This profile accepts only `type`, `actions`, and optional `identifier` inside
+  each object. Other RFC fields such as `locations`, `datatypes`, and
+  `privileges` are unsupported, as are unknown types, actions, and restrictions.
+  Any invalid object or action rejects the whole token, even if another is valid.
+  Unknown top-level claims and the previous experimental `grants`,
+  `permissions`/`project_ids`, and `scope` claims are rejected too.
+- First-time project creation, organization identities, and organization resource
+  identifiers are unsupported. Adding a type, action, or resource kind requires
+  explicit validation, resolution/authorization, and tests.
+
+For example, the authorization claim for reporting observations on any project
+(still requiring observer privileges) is:
+
+```json
+{
+  "authorization_details": [
+    {
+      "type": "warehouse",
+      "actions": ["api:observations:add"]
+    }
+  ]
+}
+```
+
+An upload token restricted to a specific project uses:
+
+```json
+{
+  "authorization_details": [
+    {
+      "type": "warehouse",
+      "actions": ["projects:upload"],
+      "identifier": "project:95ea64e2-764c-4320-a4e5-991df49f261f"
+    }
+  ]
+}
+```
+
+For publisher-wide uploads, omit `identifier` from that upload object. Token size
+then remains independent of project count. The same unexpired token can upload
+to projects added to the publisher after issuance; removing the publisher from
+a project removes access. Archived/quarantined projects still deny uploads.
+Users likewise remain limited to their live ACL privileges. Named-project
+identifiers remain useful when issuance should restrict a token regardless of
+later membership additions.
+
+This adopts the RFC's authorization-details representation, not a complete OAuth
+Rich Authorization Requests protocol implementation. Issuance, consent, metadata,
+and introspection flows are not introduced here.
+
+Subject identity and authorization scope are independent. A future
+organization-scoped grant need not make the organization the token's subject;
+the actor can remain a user or publisher. Resource matching belongs to the
+authorization layer, not to cryptographic verification.
 
 The constructor accepts `issuer`, `audience`, and a `keys` mapping from key ID
 to parsed RSA public key. Multiple keys can be supplied for rotation. It makes
 no network requests. Bad configuration and operational errors raise rather
-than being treated as invalid credentials. The verifier binds authorization
-to the authenticated user's UUID; token permission and project grants still
-cannot bypass the live user/resource ACL.
+than being treated as invalid credentials. Authorization binds the verified
+subject to the authenticated identity; authorization details still cannot bypass
+the live user/publisher resource ACL. Objects without identifiers deliberately
+follow live privileges; an identifier keeps its object's actions restricted to
+the named project. Removing a publisher from a project removes the ACL permission
+in either case.
 
 Each environment uses one issuer and separate audiences for the upload endpoint
 and the API (initially the danger API). Upload tokens must not authenticate API
@@ -473,7 +563,7 @@ limit; the general registry does not define token-profile lifetime policy.
 ## 5. Authorization: how `permits` decides
 
 Once an identity exists and the requested permission is known, the producing
-policy's `permits()` runs. All three user-backed policies ultimately consult the
+policy's `permits()` runs. All four policies ultimately consult the
 same ACL machinery (`pyramid.authorization.ACLHelper`), but they wrap it with
 different gates.
 
@@ -626,7 +716,7 @@ sequenceDiagram
 | Type | Meaning |
 |------|---------|
 | `MultiSecurityPolicy` | Tries policies in order, caches `(identity, policy)`, delegates `permits` |
-| `UserContext` | A `User` plus an optional `Macaroon`; `macaroon=None` means session auth |
+| `UserContext` | A `User` plus an optional `Macaroon`; sessions and JWTs have `macaroon=None` |
 | `PublisherTokenContext` | An OIDC publisher plus signed claims (Trusted Publishing) |
 | `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `API_KEY` (JWT verifier currently disabled) |
 | `AuthMethodsPredicate` | Storage-only route tag listing which methods may authenticate the route |

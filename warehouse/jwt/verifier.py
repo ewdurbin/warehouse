@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from types import MappingProxyType
 from uuid import UUID
 
@@ -12,21 +13,35 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from pyramid.exceptions import ConfigurationError
 from zope.interface import implementer
 
-from warehouse.accounts.utils import UserContext
 from warehouse.authnz import Permissions
+from warehouse.jwt.claims import (
+    AuthorizationDetail,
+    AuthorizationType,
+    ResourceKind,
+    ResourceRef,
+    SubjectKind,
+    SubjectRef,
+    VerifiedJWT,
+)
 from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.services import DisabledJWTVerifier
-from warehouse.packaging.models import Project
-from warehouse.predicates import auth_methods_for_route, jwt_audience_for_route
-from warehouse.utils.security_policy import AuthenticationMethod
 
 _MEDIA_TYPE = "warehouse-api-key+jwt"
 _MAX_LIFETIME_SECONDS = 300
-_REQUIRED_CLAIMS = {"iss", "aud", "sub", "iat", "exp", "permissions", "project_ids"}
-_PERMISSIONS = {
-    Permissions.ProjectsUpload,
-    Permissions.APIEcho,
-    Permissions.APIObservationsAdd,
+_REQUIRED_CLAIMS = {
+    "iss",
+    "aud",
+    "sub",
+    "subject_kind",
+    "jti",
+    "iat",
+    "exp",
+    "authorization_details",
+}
+_ACTION_RESOURCES = {
+    Permissions.ProjectsUpload: (ResourceKind.PROJECT,),
+    Permissions.APIEcho: (),
+    Permissions.APIObservationsAdd: (ResourceKind.PROJECT,),
 }
 
 
@@ -67,6 +82,16 @@ class WarehouseJWTVerifierFactory:
             raise ConfigurationError(str(exc)) from exc
 
     def __call__(self, context, request):
+        # Route metadata imports account/organization models. Keep that dependency
+        # at request-time so the verifier can also be imported before app setup.
+        from warehouse.predicates import (  # noqa: PLC0415
+            auth_methods_for_route,
+            jwt_audience_for_route,
+        )
+        from warehouse.utils.security_policy import (  # noqa: PLC0415
+            AuthenticationMethod,
+        )
+
         route = request.matched_route
         if route is not None:
             methods = auth_methods_for_route(route)
@@ -97,7 +122,8 @@ class WarehouseJWTVerifier:
     Keys are supplied by trusted configuration, never by a token or remote URL.
     Each environment has one issuer and separate upload and API audiences. Each
     verifier requires the exact audience configured for its intended recipient.
-    Permissions additionally restrict what each token can do.
+    RFC 9396 authorization details permit actions with optional resource narrowing.
+    Verification does not resolve the subject or authorize a request or resource.
     This class is deliberately not registered as the default verifier yet.
     It does not mint tokens or provide per-token revocation.
     """
@@ -169,43 +195,69 @@ class WarehouseJWTVerifier:
         # Bound the issued lifetime, not the time remaining or the nbf window.
         if not 0 < claims["exp"] - claims["iat"] <= _MAX_LIFETIME_SECONDS:
             return None
-        if not _is_uuid(claims["sub"]):
+        if not _is_uuid(claims["sub"]) or not _is_uuid(claims["jti"]):
             return None
-        permissions = claims["permissions"]
-        if not isinstance(permissions, list) or not permissions:
+        if claims["subject_kind"] not in (SubjectKind.USER, SubjectKind.PUBLISHER):
             return None
-        if any(not isinstance(p, str) or p not in _PERMISSIONS for p in permissions):
+        details = claims["authorization_details"]
+        if not isinstance(details, list) or not details:
             return None
-        project_ids = claims["project_ids"]
-        if not isinstance(project_ids, list) or any(
-            not _is_uuid(project_id) for project_id in project_ids
-        ):
-            return None
+        for detail in details:
+            if not isinstance(detail, dict) or set(detail) not in (
+                {"type", "actions"},
+                {"type", "actions", "identifier"},
+            ):
+                return None
+            if detail["type"] != AuthorizationType.WAREHOUSE:
+                return None
+            actions = detail["actions"]
+            if (
+                not isinstance(actions, list)
+                or not actions
+                or any(
+                    not isinstance(action, str) or action not in _ACTION_RESOURCES
+                    for action in actions
+                )
+            ):
+                return None
+            if "identifier" in detail:
+                # Only absence means unrestricted by resource. Null, unknown or
+                # malformed identifiers must never silently broaden the token.
+                identifier = detail["identifier"]
+                if not isinstance(identifier, str):
+                    return None
+                kind, _, resource_id = identifier.partition(":")
+                if not _is_uuid(resource_id) or any(
+                    kind not in _ACTION_RESOURCES[action] for action in actions
+                ):
+                    return None
         return claims
 
-    def verify(self, token: str) -> str | None:
+    def verify(self, token: str) -> VerifiedJWT | None:
         if (claims := self._claims(token)) is None:
             return None
-        return claims["sub"]
-
-    def permits(self, token: str, request, context, permission) -> bool:
-        # Reverify, including expiration, even if identity was cached earlier.
-        if (claims := self._claims(token)) is None:
-            return False
-        identity = request.identity
-        if (
-            not isinstance(identity, UserContext)
-            or identity.macaroon is not None
-            or str(identity.user.id) != claims["sub"]
-        ):
-            return False
-        if (
-            not isinstance(permission, Permissions)
-            or permission not in claims["permissions"]
-        ):
-            return False
-        # Echo has no project resource. Both upload and observations require an
-        # explicitly named project; an empty list grants no project access.
-        if permission == Permissions.APIEcho:
-            return True
-        return isinstance(context, Project) and str(context.id) in claims["project_ids"]
+        return VerifiedJWT(
+            jti=UUID(claims["jti"]),
+            subject=SubjectRef(
+                SubjectKind(claims["subject_kind"]), UUID(claims["sub"])
+            ),
+            issuer=claims["iss"],
+            audience=claims["aud"],
+            issued_at=datetime.fromtimestamp(claims["iat"], UTC),
+            expires_at=datetime.fromtimestamp(claims["exp"], UTC),
+            authorization_details=tuple(
+                AuthorizationDetail(
+                    type=AuthorizationType(detail["type"]),
+                    actions=tuple(Permissions(action) for action in detail["actions"]),
+                    resource=(
+                        ResourceRef(
+                            ResourceKind(detail["identifier"].partition(":")[0]),
+                            UUID(detail["identifier"].partition(":")[2]),
+                        )
+                        if "identifier" in detail
+                        else None
+                    ),
+                )
+                for detail in claims["authorization_details"]
+            ),
+        )

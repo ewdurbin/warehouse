@@ -9,7 +9,11 @@ from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.utils import UserContext
 from warehouse.cache.http import add_vary_callback
 from warehouse.errors import WarehouseDenied
+from warehouse.jwt import authorization
+from warehouse.jwt.claims import SubjectKind
 from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.oidc.models import OIDCPublisher
+from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.predicates import auth_methods_for_route
 from warehouse.utils.security_policy import (
     AuthenticationMethod,
@@ -58,21 +62,31 @@ class JWTSecurityPolicy:
             return None
 
         verifier = request.find_service(IJWTVerifier, context=None)
-        userid = verifier.verify(token)
-        if userid is None:
+        verified = verifier.verify(token)
+        if verified is None:
             return None
 
-        user_service = request.find_service(IUserService, context=None)
-        user = user_service.get_user(userid)
-        if user is None:
-            return None
-
-        is_disabled, _ = user_service.is_disabled(user.id)
-        if is_disabled:
+        # Resolve only the explicitly named kind. A UUID missing from one table
+        # must never fall back to another kind of identity.
+        if verified.subject.kind == SubjectKind.USER:
+            user_service = request.find_service(IUserService, context=None)
+            user = user_service.get_user(str(verified.subject.id))
+            if user is None:
+                return None
+            is_disabled, _ = user_service.is_disabled(user.id)
+            if is_disabled:
+                return None
+            identity = UserContext(user, macaroon=None)
+        elif verified.subject.kind == SubjectKind.PUBLISHER:
+            publisher = request.db.get(OIDCPublisher, verified.subject.id)
+            if publisher is None:
+                return None
+            identity = PublisherTokenContext(publisher, claims=None)
+        else:
             return None
 
         request.authentication_method = AuthenticationMethod.API_KEY
-        return UserContext(user, macaroon=None)
+        return identity
 
     def authenticated_userid(self, request):
         # Handled by MultiSecurityPolicy.
@@ -87,8 +101,6 @@ class JWTSecurityPolicy:
     def permits(self, request, context, permission):
         token = _extract_http_jwt(request)
         assert isinstance(token, str), "no JWT credential"
-        assert isinstance(request.identity, UserContext)
-        assert request.identity.macaroon is None
 
         if not permission_allowed_by_authentication_method(
             permission, AuthenticationMethod.API_KEY
@@ -99,7 +111,11 @@ class JWTSecurityPolicy:
             )
 
         verifier = request.find_service(IJWTVerifier, context=None)
-        if not verifier.permits(token, request, context, permission):
+        # Recheck time bounds even when identity was cached earlier in the request.
+        verified = verifier.verify(token)
+        if verified is None or not authorization.permits(
+            verified, request.identity, context, permission
+        ):
             return WarehouseDenied(
                 "Invalid or insufficiently scoped API key",
                 reason="invalid_api_key",

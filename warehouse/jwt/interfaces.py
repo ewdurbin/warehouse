@@ -5,37 +5,32 @@ from uuid import UUID
 
 from zope.interface import Interface
 
+from warehouse.jwt.claims import VerifiedJWT
+
 
 class IJWTVerifier(Interface):
-    def verify(token: str) -> str | None:
-        """Validate a JWT and return its associated Warehouse user ID.
+    def verify(token: str) -> VerifiedJWT | None:
+        """Validate a JWT and return normalized, immutable verified claims.
 
         Implementations must validate the signature, configured algorithm and
         issuer/key binding, audience, token purpose, required claims, and time
-        bounds before resolving the subject to a local user ID. An unverified
-        subject must never be used as an identity. Invalid credentials return
-        None; infrastructure and configuration failures must raise.
+        bounds. Subject kinds and authorization details types, actions, and
+        identifiers must be explicitly supported by the token profile. Unknown
+        claims or restrictions must fail closed, never be ignored. An absent
+        identifier means no token-level resource narrowing in the Warehouse
+        profile; an invalid identifier must not be treated as absent.
+        An unverified subject must never be resolved as an identity. Invalid
+        credentials return None; infrastructure and configuration failures raise.
 
         Bind the service to its intended recipient using trusted server-side
         route configuration. Token claims must not select the expected issuer
         or audience.
 
-        This establishes identity only. Callers must also enforce token
-        restrictions with permits(), account status, and the resource ACL.
-        """
-
-    def permits(token: str, request, context, permission) -> bool:
-        """Return whether the JWT allows this request, resource, and permission.
-
-        Enforce token validity and all token-specific restrictions, including
-        scopes, resource restrictions, and revocation where applicable. Missing
-        or unsupported authorization claims must not imply unrestricted access.
-        The request identity must correspond to the token's verified subject.
-        Invalid credentials or insufficient scope return False; infrastructure
-        and configuration failures must raise.
-
-        A True result does not grant access by itself: the policy must also
-        enforce its authentication-method allowlist and the resource ACL.
+        This performs no database lookups or resource authorization. Callers must
+        check registry liveness, resolve the typed subject and its current status,
+        and enforce authorization details, the method allowlist, and live ACLs.
+        Reverify at authorization time, even when request identity is cached;
+        the resolved identity must still match the verified subject kind and ID.
         """
 
 

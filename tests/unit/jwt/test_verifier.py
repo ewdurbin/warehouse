@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import hmac
 import json
 import types
 
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -22,14 +24,32 @@ from pyramid.interfaces import IRoutesMapper
 from pyramid.request import Request, apply_request_extensions
 from zope.interface.verify import verifyClass
 
+from tests.common.db.accounts import UserFactory
+from tests.common.db.oidc import GitHubPublisherFactory
+from tests.common.db.packaging import ProjectFactory, RoleFactory
+from warehouse.accounts import _oidc_claims, _oidc_publisher, _user
 from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.utils import UserContext
 from warehouse.authnz import Permissions
+from warehouse.jwt.claims import (
+    AuthorizationDetail,
+    AuthorizationType,
+    ResourceKind,
+    ResourceRef,
+    SubjectKind,
+    SubjectRef,
+    VerifiedJWT,
+)
 from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.security_policy import JWTSecurityPolicy
 from warehouse.jwt.services import DisabledJWTVerifier, jwt_verifier_factory
-from warehouse.jwt.verifier import WarehouseJWTVerifier, WarehouseJWTVerifierFactory
-from warehouse.packaging.models import Project
+from warehouse.jwt.verifier import (
+    WarehouseJWTVerifier,
+    WarehouseJWTVerifierFactory,
+    _is_uuid,
+)
+from warehouse.oidc.utils import PublisherTokenContext
+from warehouse.packaging.models import LifecycleStatus, Project
 from warehouse.predicates import AuthMethodsPredicate, JWTAudiencePredicate
 from warehouse.routes import includeme as include_routes
 from warehouse.utils.security_policy import AuthenticationMethod, MultiSecurityPolicy
@@ -40,7 +60,14 @@ UPLOAD_AUDIENCE = "https://warehouse.example/upload"
 USER_ID = "ddf9597e-dda1-45a2-b026-3a090ad7c4b2"
 PROJECT_ID = "95ea64e2-764c-4320-a4e5-991df49f261f"
 OTHER_ID = "fa604ec6-493b-4cbd-93a2-aa07883e4649"
+JTI = "0199c0f2-4b00-7000-8000-000000000001"
 NOW = 2_000_000_000
+
+
+@pytest.mark.parametrize("value", [None, True, 1, [], {}])
+def test_uuid_requires_string(value):
+    # PyJWT also checks subject/JTI types; keep our canonical-ID guard independent.
+    assert not _is_uuid(value)
 
 
 @pytest.fixture(scope="module")
@@ -62,14 +89,23 @@ def claims():
         "iss": ISSUER,
         "aud": API_AUDIENCE,
         "sub": USER_ID,
+        "subject_kind": "user",
+        "jti": JTI,
         "iat": NOW - 60,
         "exp": NOW + 240,
-        "permissions": [
-            "projects:upload",
-            "api:echo",
-            "api:observations:add",
+        "authorization_details": [
+            {
+                "type": "warehouse",
+                "actions": ["projects:upload"],
+                "identifier": f"project:{PROJECT_ID}",
+            },
+            {"type": "warehouse", "actions": ["api:echo"]},
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "identifier": f"project:{PROJECT_ID}",
+            },
         ],
-        "project_ids": [PROJECT_ID],
     }
 
 
@@ -119,11 +155,6 @@ def user():
     return types.SimpleNamespace(
         id=UUID(USER_ID), __principals__=lambda: [Authenticated, f"user:{USER_ID}"]
     )
-
-
-@pytest.fixture
-def request_identity(user):
-    return types.SimpleNamespace(identity=UserContext(user, macaroon=None))
 
 
 @pytest.fixture
@@ -252,7 +283,9 @@ class TestWarehouseJWTVerifierFactory:
         jwt_settings["warehouse.jwt.api_audience"] = UPLOAD_AUDIENCE
         verifier = factory(None, request)
         assert factory(None, request) is verifier
-        assert verifier.verify(sign()) == USER_ID
+        assert verifier.verify(sign()).subject == SubjectRef(
+            SubjectKind.USER, UUID(USER_ID)
+        )
         assert load.call_count == 2
 
     @pytest.mark.parametrize(
@@ -293,63 +326,65 @@ class TestWarehouseJWTVerifierFactory:
         )
 
 
+@pytest.fixture
+def jwt_enabled():
+    return True
+
+
+@pytest.fixture
+def make_request(jwt_settings, jwt_enabled, user, mocker, clock):
+    jwt_settings.pop("warehouse.jwt.enabled")
+    if jwt_enabled is not None:
+        jwt_settings["warehouse.jwt.enabled"] = jwt_enabled
+    user_service = mocker.Mock(spec=["get_user", "is_disabled"])
+    user_service.get_user.return_value = user
+    user_service.is_disabled.return_value = (False, None)
+    jwt_settings.update(
+        {
+            "docs.url": "https://docs.example",
+            "files.url": "https://files.example/{path}",
+        }
+    )
+    with testing.testConfig(settings=jwt_settings) as config:
+        config.include("pyramid_services")
+        config.include("warehouse.predicates")
+        config.include("warehouse.legacy.action_routing")
+        config.include("warehouse.forklift")
+        # Install the application's actual add_route declarations without
+        # unrelated redirect/template/XML-RPC view configuration.
+        route_config = mocker.Mock()
+        route_config.get_settings.return_value = config.get_settings()
+        route_config.registry = config.registry
+        route_config.add_route = config.add_route
+        include_routes(route_config)
+        for audience_name in ("api", "upload"):
+            config.add_route(
+                f"new-endpoint.{audience_name}",
+                f"/audience-test/{audience_name}",
+                auth_methods={"api-key"},
+                jwt_audience=audience_name,
+            )
+        config.add_directive("add_periodic_task", mocker.Mock())
+        config.include("warehouse.jwt")
+        config.register_service(user_service, IUserService)
+        config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
+        config.commit()
+        mapper = config.registry.getUtility(IRoutesMapper)
+
+        def make_request(path, token):
+            request = Request.blank(path)
+            request.registry = config.registry
+            apply_request_extensions(request)
+            request.headers["Authorization"] = f"Bearer {token}"
+            match = mapper(request)
+            request.matched_route = match["route"]
+            request.matchdict = match["match"]
+            return request
+
+        yield make_request
+
+
 class TestAudienceJWTService:
-    @pytest.fixture
-    def jwt_enabled(self):
-        return True
-
-    @pytest.fixture
-    def make_request(self, jwt_settings, jwt_enabled, user, mocker, clock):
-        jwt_settings.pop("warehouse.jwt.enabled")
-        if jwt_enabled is not None:
-            jwt_settings["warehouse.jwt.enabled"] = jwt_enabled
-        user_service = mocker.Mock(spec=["get_user", "is_disabled"])
-        user_service.get_user.return_value = user
-        user_service.is_disabled.return_value = (False, None)
-        jwt_settings.update(
-            {
-                "docs.url": "https://docs.example",
-                "files.url": "https://files.example/{path}",
-            }
-        )
-        with testing.testConfig(settings=jwt_settings) as config:
-            config.include("pyramid_services")
-            config.include("warehouse.predicates")
-            config.include("warehouse.legacy.action_routing")
-            config.include("warehouse.forklift")
-            # Install the application's actual add_route declarations without
-            # unrelated redirect/template/XML-RPC view configuration.
-            route_config = mocker.Mock()
-            route_config.get_settings.return_value = config.get_settings()
-            route_config.registry = config.registry
-            route_config.add_route = config.add_route
-            include_routes(route_config)
-            for audience_name in ("api", "upload"):
-                config.add_route(
-                    f"new-endpoint.{audience_name}",
-                    f"/audience-test/{audience_name}",
-                    auth_methods={"api-key"},
-                    jwt_audience=audience_name,
-                )
-            config.add_directive("add_periodic_task", mocker.Mock())
-            config.include("warehouse.jwt")
-            config.register_service(user_service, IUserService)
-            config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
-            config.commit()
-            mapper = config.registry.getUtility(IRoutesMapper)
-
-            def make_request(path, token):
-                request = Request.blank(path)
-                request.registry = config.registry
-                apply_request_extensions(request)
-                request.headers["Authorization"] = f"Bearer {token}"
-                match = mapper(request)
-                request.matched_route = match["route"]
-                request.matchdict = match["match"]
-                return request
-
-            yield make_request
-
     @pytest.mark.parametrize(
         ("path", "route_name", "audience", "permission"),
         [
@@ -508,28 +543,44 @@ class TestWarehouseJWTVerifier:
             )
 
     def test_valid_token(self, verifier, sign):
-        assert verifier.verify(sign()) == USER_ID
+        assert verifier.verify(sign()) == VerifiedJWT(
+            jti=UUID(JTI),
+            subject=SubjectRef(SubjectKind.USER, UUID(USER_ID)),
+            issuer=ISSUER,
+            audience=API_AUDIENCE,
+            issued_at=datetime.fromtimestamp(NOW - 60, UTC),
+            expires_at=datetime.fromtimestamp(NOW + 240, UTC),
+            authorization_details=(
+                AuthorizationDetail(
+                    AuthorizationType.WAREHOUSE,
+                    (Permissions.ProjectsUpload,),
+                    ResourceRef(ResourceKind.PROJECT, UUID(PROJECT_ID)),
+                ),
+                AuthorizationDetail(
+                    AuthorizationType.WAREHOUSE, (Permissions.APIEcho,)
+                ),
+                AuthorizationDetail(
+                    AuthorizationType.WAREHOUSE,
+                    (Permissions.APIObservationsAdd,),
+                    ResourceRef(ResourceKind.PROJECT, UUID(PROJECT_ID)),
+                ),
+            ),
+        )
 
     @pytest.mark.parametrize("issuer_host", ["pypi.org", "test.pypi.org"])
     @pytest.mark.parametrize("audience_host", ["pypi.org", "test.pypi.org"])
     @pytest.mark.parametrize("recipient_host", ["pypi.org", "test.pypi.org"])
-    @pytest.mark.parametrize(
-        ("recipient", "permission"),
-        [("api", Permissions.APIEcho), ("upload", Permissions.ProjectsUpload)],
-    )
+    @pytest.mark.parametrize("recipient", ["api", "upload"])
     def test_environment_binding(
         self,
         clock,
         signing_keys,
         sign,
         claims,
-        request_identity,
-        project,
         issuer_host,
         audience_host,
         recipient_host,
         recipient,
-        permission,
     ):
         # Deliberately share a key to isolate issuer/audience validation. Real
         # deployments must use separate signing keys for each environment.
@@ -542,15 +593,15 @@ class TestWarehouseJWTVerifier:
         claims["aud"] = f"https://{audience_host}/{recipient}"
         token = sign()
         matches = issuer_host == audience_host == recipient_host
-        assert verifier.verify(token) == (USER_ID if matches else None)
-        assert verifier.permits(token, request_identity, project, permission) == matches
+        assert (verifier.verify(token) is not None) == matches
 
     def test_disabled_verifier_still_rejects_signed_tokens(self, verifier, sign):
         token = sign()
-        assert verifier.verify(token) == USER_ID
+        assert verifier.verify(token).subject == SubjectRef(
+            SubjectKind.USER, UUID(USER_ID)
+        )
         disabled = DisabledJWTVerifier()
         assert disabled.verify(token) is None
-        assert not disabled.permits(token, None, None, Permissions.APIEcho)
 
     def test_configured_key_rotation(self, clock, signing_keys, sign, headers):
         keys = {
@@ -559,9 +610,13 @@ class TestWarehouseJWTVerifier:
         }
         verifier = WarehouseJWTVerifier(issuer=ISSUER, audience=API_AUDIENCE, keys=keys)
         keys.clear()  # Caller mutation must not change the configured trust set.
-        assert verifier.verify(sign()) == USER_ID
+        assert verifier.verify(sign()).subject == SubjectRef(
+            SubjectKind.USER, UUID(USER_ID)
+        )
         headers["kid"] = "previous"
-        assert verifier.verify(sign(key=signing_keys[1])) == USER_ID
+        assert verifier.verify(sign(key=signing_keys[1])).subject == SubjectRef(
+            SubjectKind.USER, UUID(USER_ID)
+        )
 
     @pytest.mark.parametrize("token", ["", "garbage", "a.b.c", "e30.e30."])
     def test_malformed_token(self, verifier, token):
@@ -639,7 +694,17 @@ class TestWarehouseJWTVerifier:
         assert verifier.verify(token) is None
 
     @pytest.mark.parametrize(
-        "claim", ["iss", "aud", "sub", "iat", "exp", "permissions", "project_ids"]
+        "claim",
+        [
+            "iss",
+            "aud",
+            "sub",
+            "subject_kind",
+            "jti",
+            "iat",
+            "exp",
+            "authorization_details",
+        ],
     )
     @pytest.mark.parametrize("missing", [False, True])
     def test_required_claim(
@@ -698,7 +763,7 @@ class TestWarehouseJWTVerifier:
     )
     def test_time_bounds(self, verifier, sign, claims, claim, value, valid):
         claims[claim] = value
-        assert verifier.verify(sign()) == (USER_ID if valid else None)
+        assert (verifier.verify(sign()) is not None) == valid
 
     @pytest.mark.parametrize(
         ("lifetime", "valid"),
@@ -712,21 +777,15 @@ class TestWarehouseJWTVerifier:
             (3600, False),
         ],
     )
-    def test_maximum_lifetime(
-        self, verifier, sign, claims, request_identity, lifetime, valid
-    ):
+    def test_maximum_lifetime(self, verifier, sign, claims, lifetime, valid):
         claims["iat"] = NOW
         claims["exp"] = NOW + lifetime
         token = sign()
-        assert verifier.verify(token) == (USER_ID if valid else None)
-        assert (
-            verifier.permits(token, request_identity, None, Permissions.APIEcho)
-            == valid
-        )
+        assert (verifier.verify(token) is not None) == valid
 
     @pytest.mark.parametrize("with_nbf", [False, True])
     def test_lifetime_is_measured_from_issuance(
-        self, verifier, sign, claims, request_identity, clock, with_nbf
+        self, verifier, sign, claims, clock, with_nbf
     ):
         claims["iat"] = NOW
         claims["exp"] = NOW + 3600
@@ -736,22 +795,249 @@ class TestWarehouseJWTVerifier:
         # Even with only one second remaining, this is still a one-hour token.
         clock.move_to(datetime.fromtimestamp(NOW + 3599, UTC))
         assert verifier.verify(token) is None
-        assert not verifier.permits(token, request_identity, None, Permissions.APIEcho)
 
-    @pytest.mark.parametrize(
-        "permissions",
-        [[], "api:echo", {}, ["*"], ["unknown"], ["accounts:manage"], [1], [[]]],
-    )
-    def test_invalid_permissions(self, verifier, sign, claims, permissions):
-        claims["permissions"] = permissions
+    @pytest.mark.parametrize("kind", ["organization", "project", "", 1, [], {}, None])
+    def test_unknown_subject_kind(self, verifier, sign, claims, kind):
+        claims["subject_kind"] = kind
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize("kind", ["user", "publisher"])
+    def test_typed_subject(self, verifier, sign, claims, kind):
+        claims["subject_kind"] = kind
+        assert verifier.verify(sign()).subject == SubjectRef(
+            SubjectKind(kind), UUID(USER_ID)
+        )
+
+    @pytest.mark.parametrize("value", ["", "*", 1, [], {}, USER_ID.upper()])
+    def test_invalid_jti(self, verifier, sign, claims, value):
+        claims["jti"] = value
         assert verifier.verify(sign()) is None
 
     @pytest.mark.parametrize(
-        "project_ids", ["*", PROJECT_ID, {}, ["*"], ["name"], [1], [[]]]
+        "details", [None, [], {}, "*", True, 1, ["api:echo"], [None], [1], [[]]]
     )
-    def test_invalid_project_ids(self, verifier, sign, claims, project_ids):
-        claims["project_ids"] = project_ids
+    def test_invalid_authorization_details(self, verifier, sign, claims, details):
+        claims["authorization_details"] = details
         assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            {},
+            {"type": "warehouse"},
+            {"actions": ["api:echo"]},
+            {"permission": "api:echo", "scope": "permission"},
+        ],
+    )
+    def test_missing_detail_fields(self, verifier, sign, claims, detail):
+        claims["authorization_details"] = [detail]
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize(
+        "type_", [None, True, 1, [], {}, "", "Warehouse", "unknown"]
+    )
+    def test_unknown_detail_type(self, verifier, sign, claims, type_):
+        claims["authorization_details"] = [{"type": type_, "actions": ["api:echo"]}]
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize(
+        "actions",
+        [
+            None,
+            [],
+            {},
+            True,
+            1,
+            "api:echo",
+            "api:echo api:observations:add",
+            ["*"],
+            ["unknown"],
+            ["accounts:manage"],
+            [None],
+            [False],
+            [1],
+            [[]],
+            [{}],
+            ["api:echo", "unknown"],
+        ],
+    )
+    def test_invalid_actions(self, verifier, sign, claims, actions):
+        claims["authorization_details"] = [{"type": "warehouse", "actions": actions}]
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("locations", ["https://warehouse.example/api"]),
+            ("datatypes", ["observations"]),
+            ("privileges", ["observer"]),
+            ("restriction", "future"),
+            ("scope", "permission"),
+            ("permission", "api:echo"),
+            ("resource", {"kind": "project", "id": PROJECT_ID}),
+        ],
+    )
+    @pytest.mark.parametrize("narrowed", [False, True])
+    def test_unsupported_detail_fields(
+        self, verifier, sign, claims, field, value, narrowed
+    ):
+        detail = {
+            "type": "warehouse",
+            "actions": ["api:observations:add"],
+            field: value,
+        }
+        if narrowed:
+            detail["identifier"] = f"project:{PROJECT_ID}"
+        claims["authorization_details"] = [detail]
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            None,
+            False,
+            1,
+            [],
+            {},
+            "",
+            "*",
+            PROJECT_ID,
+            {"kind": "project", "id": PROJECT_ID},
+            "project:",
+            "project:*",
+            f":{PROJECT_ID}",
+            f"PROJECT:{PROJECT_ID}",
+            f"project:{PROJECT_ID.upper()}",
+            f"project:{{{PROJECT_ID}}}",
+            f"project:{PROJECT_ID.replace('-', '')}",
+            f"project:{PROJECT_ID}:extra",
+            f"project:{PROJECT_ID}\n",
+            f" project:{PROJECT_ID}",
+            f"organization:{PROJECT_ID}",
+            f"user:{USER_ID}",
+            f"publisher:{USER_ID}",
+            f"publisher-projects:{USER_ID}",
+        ],
+    )
+    @pytest.mark.parametrize("subject_kind", ["user", "publisher"])
+    def test_invalid_identifier(self, verifier, sign, claims, identifier, subject_kind):
+        claims["subject_kind"] = subject_kind
+        claims["authorization_details"] = [
+            {
+                "type": "warehouse",
+                "actions": ["projects:upload"],
+                "identifier": identifier,
+            }
+        ]
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize("actions", [["api:echo"], ["projects:upload", "api:echo"]])
+    def test_identifier_must_apply_to_every_action(
+        self, verifier, sign, claims, actions
+    ):
+        claims["authorization_details"] = [
+            {
+                "type": "warehouse",
+                "actions": actions,
+                "identifier": f"project:{PROJECT_ID}",
+            }
+        ]
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize(
+        "invalid",
+        [
+            {"type": "unknown", "actions": ["api:observations:add"]},
+            {"type": "warehouse", "actions": ["unknown"]},
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "identifier": None,
+            },
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "restriction": "future",
+            },
+        ],
+    )
+    @pytest.mark.parametrize("invalid_first", [False, True])
+    def test_invalid_detail_rejects_entire_token(
+        self, verifier, sign, claims, invalid, invalid_first
+    ):
+        details = [{"type": "warehouse", "actions": ["api:observations:add"]}, invalid]
+        claims["authorization_details"] = (
+            list(reversed(details)) if invalid_first else details
+        )
+        assert verifier.verify(sign()) is None
+
+    @pytest.mark.parametrize("subject_kind", ["user", "publisher"])
+    @pytest.mark.parametrize(
+        "permission",
+        [
+            Permissions.ProjectsUpload,
+            Permissions.APIEcho,
+            Permissions.APIObservationsAdd,
+        ],
+    )
+    def test_permission_wide_detail(
+        self, verifier, sign, claims, subject_kind, permission
+    ):
+        claims["subject_kind"] = subject_kind
+        claims["authorization_details"] = [
+            {"type": "warehouse", "actions": [permission]}
+        ]
+        result = verifier.verify(sign())
+        assert result.authorization_details == (
+            AuthorizationDetail(AuthorizationType.WAREHOUSE, (permission,)),
+        )
+
+    @pytest.mark.parametrize("narrowed", [False, True])
+    def test_multiple_actions_in_one_detail(self, verifier, sign, claims, narrowed):
+        actions = ["projects:upload", "api:observations:add"]
+        detail = {"type": "warehouse", "actions": actions}
+        if narrowed:
+            detail["identifier"] = f"project:{PROJECT_ID}"
+        claims["authorization_details"] = [detail]
+        assert verifier.verify(sign()).authorization_details == (
+            AuthorizationDetail(
+                AuthorizationType.WAREHOUSE,
+                (Permissions.ProjectsUpload, Permissions.APIObservationsAdd),
+                ResourceRef(ResourceKind.PROJECT, UUID(PROJECT_ID))
+                if narrowed
+                else None,
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "legacy",
+        [
+            {"grants": [{"permission": "api:echo", "scope": "permission"}]},
+            {"permissions": ["api:echo"], "project_ids": []},
+            {"scope": "api:echo"},
+        ],
+    )
+    @pytest.mark.parametrize("with_details", [False, True])
+    def test_legacy_authorization_is_not_accepted(
+        self, verifier, sign, claims, legacy, with_details
+    ):
+        if not with_details:
+            del claims["authorization_details"]
+        claims.update(legacy)
+        assert verifier.verify(sign()) is None
+
+    def test_immutable_result(self, verifier, sign):
+        verified = verifier.verify(sign())
+        with pytest.raises(FrozenInstanceError):
+            verified.audience = UPLOAD_AUDIENCE
+        with pytest.raises(FrozenInstanceError):
+            verified.subject.kind = SubjectKind.PUBLISHER
+        with pytest.raises(FrozenInstanceError):
+            verified.authorization_details[0].actions = (Permissions.APIEcho,)
+        with pytest.raises(FrozenInstanceError):
+            verified.authorization_details[0].resource.id = UUID(OTHER_ID)
+        assert isinstance(verified.authorization_details, tuple)
+        assert isinstance(verified.authorization_details[0].actions, tuple)
 
     @pytest.mark.parametrize(
         "error", [RuntimeError("unavailable"), jwt.InvalidKeyError()]
@@ -761,85 +1047,6 @@ class TestWarehouseJWTVerifier:
         mocker.patch("warehouse.jwt.verifier.jwt.decode", side_effect=error)
         with pytest.raises(type(error)):
             verifier.verify(token)
-        with pytest.raises(type(error)):
-            verifier.permits(token, None, None, Permissions.APIEcho)
-
-    def test_invalid_token_cannot_authorize(self, verifier):
-        assert not verifier.permits("invalid", None, None, Permissions.APIEcho)
-
-    @pytest.mark.parametrize(
-        ("expected_audience", "permission"),
-        [
-            (UPLOAD_AUDIENCE, Permissions.ProjectsUpload),
-            (API_AUDIENCE, Permissions.APIObservationsAdd),
-        ],
-    )
-    def test_project_scope(
-        self,
-        verifier,
-        sign,
-        request_identity,
-        project,
-        claims,
-        expected_audience,
-        permission,
-    ):
-        claims["aud"] = expected_audience
-        token = sign()
-        assert verifier.permits(token, request_identity, project, permission)
-        project.id = UUID(OTHER_ID)
-        assert not verifier.permits(token, request_identity, project, permission)
-        project.id = UUID(PROJECT_ID)
-        assert not verifier.permits(
-            token, request_identity, types.SimpleNamespace(id=project.id), permission
-        )
-        claims["project_ids"] = []
-        assert not verifier.permits(sign(), request_identity, project, permission)
-
-    def test_echo_needs_no_project(self, verifier, sign, claims, request_identity):
-        claims["permissions"] = ["api:echo"]
-        claims["project_ids"] = []
-        token = sign()
-        assert verifier.verify(token) == USER_ID
-        assert verifier.permits(token, request_identity, None, Permissions.APIEcho)
-
-    @pytest.mark.parametrize(
-        ("expected_audience", "permission"),
-        [
-            (UPLOAD_AUDIENCE, Permissions.ProjectsUpload),
-            (API_AUDIENCE, Permissions.APIObservationsAdd),
-        ],
-    )
-    def test_missing_permission(
-        self,
-        verifier,
-        sign,
-        claims,
-        request_identity,
-        project,
-        expected_audience,
-        permission,
-    ):
-        claims["aud"] = expected_audience
-        claims["permissions"] = ["api:echo"]
-        assert not verifier.permits(sign(), request_identity, project, permission)
-
-    @pytest.mark.parametrize("permission", [Permissions.AccountManage, "api:echo", "*"])
-    def test_unsupported_permission(self, verifier, sign, request_identity, permission):
-        assert not verifier.permits(sign(), request_identity, None, permission)
-
-    @pytest.mark.parametrize("identity", [None, types.SimpleNamespace()])
-    def test_missing_user_identity(self, verifier, sign, request_identity, identity):
-        request_identity.identity = identity
-        assert not verifier.permits(sign(), request_identity, None, Permissions.APIEcho)
-
-    def test_wrong_user(self, verifier, sign, request_identity):
-        request_identity.identity.user.id = UUID(OTHER_ID)
-        assert not verifier.permits(sign(), request_identity, None, Permissions.APIEcho)
-
-    def test_macaroon_identity(self, verifier, sign, request_identity):
-        request_identity.identity.macaroon = object()
-        assert not verifier.permits(sign(), request_identity, None, Permissions.APIEcho)
 
 
 class TestSignedJWTPolicy:
@@ -937,11 +1144,11 @@ class TestSignedJWTPolicy:
         self, jwt_request, sign, claims, project, expected_audience, permission, granted
     ):
         claims["aud"] = expected_audience
-        claims["permissions"] = (
-            [permission]
-            if granted
-            else [p for p in claims["permissions"] if p != permission]
-        )
+        claims["authorization_details"] = [
+            detail
+            for detail in claims["authorization_details"]
+            if (permission in detail["actions"]) == granted
+        ]
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
         project.__acl__ = [(Allow, f"user:{USER_ID}", permission)]
         assert jwt_request.identity is not None
@@ -959,7 +1166,392 @@ class TestSignedJWTPolicy:
         self, jwt_request, sign, claims, project, expected_audience, permission, scoped
     ):
         claims["aud"] = expected_audience
-        claims["project_ids"] = [PROJECT_ID] if scoped else [OTHER_ID]
+        for detail in claims["authorization_details"]:
+            if "identifier" in detail:
+                detail["identifier"] = f"project:{PROJECT_ID if scoped else OTHER_ID}"
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
         project.__acl__ = [(Allow, f"user:{USER_ID}", permission)]
         assert bool(jwt_request.has_permission(permission, project)) == scoped
+
+    def test_permission_resource_pairs_do_not_cross(
+        self, jwt_request, claims, sign, project
+    ):
+        claims["authorization_details"] = [
+            {
+                "type": "warehouse",
+                "actions": ["projects:upload"],
+                "identifier": f"project:{PROJECT_ID}",
+            },
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "identifier": f"project:{OTHER_ID}",
+            },
+        ]
+        jwt_request.headers["Authorization"] = f"Bearer {sign()}"
+        project.__acl__ = [
+            (
+                Allow,
+                f"user:{USER_ID}",
+                [Permissions.ProjectsUpload, Permissions.APIObservationsAdd],
+            )
+        ]
+        assert jwt_request.has_permission(Permissions.ProjectsUpload, project)
+        assert not jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+        project.id = UUID(OTHER_ID)
+        assert not jwt_request.has_permission(Permissions.ProjectsUpload, project)
+        assert jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+
+    def test_multiple_actions_share_one_identifier(
+        self, jwt_request, claims, sign, project
+    ):
+        permissions = [Permissions.ProjectsUpload, Permissions.APIObservationsAdd]
+        claims["authorization_details"] = [
+            {
+                "type": "warehouse",
+                "actions": permissions,
+                "identifier": f"project:{PROJECT_ID}",
+            }
+        ]
+        jwt_request.headers["Authorization"] = f"Bearer {sign()}"
+        project.__acl__ = [(Allow, f"user:{USER_ID}", permissions)]
+        for permission in permissions:
+            assert jwt_request.has_permission(permission, project)
+        project.id = UUID(OTHER_ID)
+        for permission in permissions:
+            assert not jwt_request.has_permission(permission, project)
+
+    def test_permission_wide_action_does_not_widen_other_details(
+        self, jwt_request, claims, sign, project
+    ):
+        claims["authorization_details"] = [
+            {"type": "warehouse", "actions": ["projects:upload"]},
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "identifier": f"project:{OTHER_ID}",
+            },
+        ]
+        jwt_request.headers["Authorization"] = f"Bearer {sign()}"
+        project.__acl__ = [
+            (
+                Allow,
+                f"user:{USER_ID}",
+                [Permissions.ProjectsUpload, Permissions.APIObservationsAdd],
+            )
+        ]
+        assert jwt_request.has_permission(Permissions.ProjectsUpload, project)
+        assert not jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+        project.id = UUID(OTHER_ID)
+        assert jwt_request.has_permission(Permissions.ProjectsUpload, project)
+        assert jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+
+
+class TestSignedObservationJWTPolicy:
+    @pytest.fixture
+    def user(self, db_session):
+        return UserFactory(is_observer=True)
+
+    @pytest.fixture(autouse=True)
+    def observation_claims(self, claims, user):
+        claims["sub"] = str(user.id)
+        claims["authorization_details"] = [
+            {"type": "warehouse", "actions": ["api:observations:add"]}
+        ]
+
+    def test_observer_can_report_on_unrelated_projects(self, make_request, sign, user):
+        projects = [ProjectFactory(), ProjectFactory()]
+        token = sign()
+        for project in projects:
+            request = make_request(
+                f"/danger-api/projects/{project.name}/observations", token
+            )
+            assert request.matched_route.name == "api.projects.observations"
+            assert request.identity == UserContext(user, macaroon=None)
+            assert request.authentication_method == AuthenticationMethod.API_KEY
+            assert request.has_permission(Permissions.APIObservationsAdd, project)
+
+    @pytest.mark.parametrize("narrowed", [False, True])
+    @pytest.mark.parametrize("role_name", [None, "Owner", "Maintainer"])
+    def test_nonobserver_cannot_report(
+        self, make_request, sign, claims, user, narrowed, role_name
+    ):
+        user.is_observer = False
+        project = ProjectFactory()
+        if role_name is not None:
+            RoleFactory(user=user, project=project, role_name=role_name)
+        if narrowed:
+            claims["authorization_details"] = [
+                {
+                    "type": "warehouse",
+                    "actions": ["api:observations:add"],
+                    "identifier": f"project:{project.id}",
+                }
+            ]
+        request = make_request(
+            f"/danger-api/projects/{project.name}/observations", sign()
+        )
+        assert request.identity == UserContext(user, macaroon=None)
+        assert not request.has_permission(Permissions.APIObservationsAdd, project)
+
+    def test_observer_privilege_removal_takes_effect(
+        self, make_request, sign, user, db_session
+    ):
+        project = ProjectFactory()
+        request = make_request(
+            f"/danger-api/projects/{project.name}/observations", sign()
+        )
+        assert request.has_permission(Permissions.APIObservationsAdd, project)
+        user.is_observer = False
+        db_session.flush()
+        db_session.expire(user, ["is_observer"])
+        assert not request.has_permission(Permissions.APIObservationsAdd, project)
+
+    def test_resource_narrowing(self, make_request, sign, claims):
+        allowed, other = ProjectFactory(), ProjectFactory()
+        claims["authorization_details"] = [
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "identifier": f"project:{allowed.id}",
+            }
+        ]
+        token = sign()
+        request = make_request(
+            f"/danger-api/projects/{allowed.name}/observations", token
+        )
+        assert request.has_permission(Permissions.APIObservationsAdd, allowed)
+        request = make_request(f"/danger-api/projects/{other.name}/observations", token)
+        assert request.identity is not None
+        assert not request.has_permission(Permissions.APIObservationsAdd, other)
+
+    @pytest.mark.parametrize("include_broad", [False, True])
+    def test_details_are_additive(self, make_request, sign, claims, include_broad):
+        first, second, other = ProjectFactory(), ProjectFactory(), ProjectFactory()
+        claims["authorization_details"] = [
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "identifier": f"project:{project.id}",
+            }
+            for project in (first, second)
+        ]
+        if include_broad:
+            claims["authorization_details"].append(
+                {"type": "warehouse", "actions": ["api:observations:add"]}
+            )
+        token = sign()
+        for project in (first, second, other):
+            request = make_request(
+                f"/danger-api/projects/{project.name}/observations", token
+            )
+            assert bool(
+                request.has_permission(Permissions.APIObservationsAdd, project)
+            ) == (include_broad or project in (first, second))
+
+    def test_grant_does_not_allow_other_operations(self, make_request, sign):
+        project = ProjectFactory()
+        request = make_request(
+            f"/danger-api/projects/{project.name}/observations", sign()
+        )
+        assert request.has_permission(Permissions.APIObservationsAdd, project)
+        assert not request.has_permission(Permissions.APIEcho, project)
+        assert not request.has_permission(Permissions.ProjectsUpload, project)
+
+    def test_observer_privilege_does_not_replace_grant(
+        self, make_request, sign, claims
+    ):
+        project = ProjectFactory()
+        claims["authorization_details"] = [
+            {"type": "warehouse", "actions": ["api:echo"]}
+        ]
+        request = make_request(
+            f"/danger-api/projects/{project.name}/observations", sign()
+        )
+        assert request.identity is not None
+        assert not request.has_permission(Permissions.APIObservationsAdd, project)
+
+
+class TestSignedPublisherJWTPolicy:
+    @pytest.fixture(params=[True, False])
+    def narrowed_upload(self, request):
+        return request.param
+
+    @pytest.fixture
+    def expected_audience(self):
+        return UPLOAD_AUDIENCE
+
+    @pytest.fixture
+    def publisher(self, db_session):
+        return GitHubPublisherFactory()
+
+    @pytest.fixture
+    def publisher_project(self, publisher):
+        return ProjectFactory(oidc_publishers=[publisher])
+
+    @pytest.fixture
+    def jwt_request(
+        self,
+        verifier,
+        publisher,
+        publisher_project,
+        claims,
+        sign,
+        db_session,
+        mocker,
+        expected_audience,
+        narrowed_upload,
+    ):
+        upload_detail = {"type": "warehouse", "actions": ["projects:upload"]}
+        if narrowed_upload:
+            upload_detail["identifier"] = f"project:{publisher_project.id}"
+        claims.update(
+            sub=str(publisher.id),
+            subject_kind="publisher",
+            aud=expected_audience,
+            authorization_details=[
+                upload_detail,
+                {"type": "warehouse", "actions": ["api:echo"]},
+            ],
+        )
+        user_service = mocker.Mock(spec=["get_user", "is_disabled"])
+        with testing.testConfig() as config:
+            config.include("pyramid_services")
+            config.register_service(verifier, IJWTVerifier)
+            config.register_service(user_service, IUserService)
+            config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
+            config.commit()
+            request = Request.blank("/")
+            request.registry = config.registry
+            apply_request_extensions(request)
+            request.db = db_session
+            request.matched_route = types.SimpleNamespace(
+                predicates=[AuthMethodsPredicate({"api-key"}, None)]
+            )
+            request.headers["Authorization"] = f"Bearer {sign()}"
+            yield request
+        user_service.get_user.assert_not_called()
+        user_service.is_disabled.assert_not_called()
+
+    def test_publisher_uses_existing_identity_contract(
+        self, jwt_request, publisher, publisher_project
+    ):
+        assert jwt_request.identity == PublisherTokenContext(publisher, claims=None)
+        assert jwt_request.authenticated_userid is None
+        assert _user(jwt_request) is None
+        assert _oidc_publisher(jwt_request) is publisher
+        assert _oidc_claims(jwt_request) is None
+        assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
+        assert jwt_request.has_permission(Permissions.ProjectsUpload, publisher_project)
+
+    def test_removing_publisher_from_project_denies(
+        self, jwt_request, publisher_project, db_session
+    ):
+        assert jwt_request.has_permission(Permissions.ProjectsUpload, publisher_project)
+        publisher_project.oidc_publishers.clear()
+        db_session.flush()
+        db_session.expire(publisher_project, ["oidc_publishers"])
+        assert not jwt_request.has_permission(
+            Permissions.ProjectsUpload, publisher_project
+        )
+
+    def test_new_project_membership_respects_scope(
+        self, jwt_request, publisher, narrowed_upload, db_session
+    ):
+        # Reuse the exact signed token and cached identity after membership changes.
+        assert jwt_request.identity is not None
+        original_header = jwt_request.headers["Authorization"]
+        other = ProjectFactory()
+        assert not jwt_request.has_permission(Permissions.ProjectsUpload, other)
+        other.oidc_publishers.append(publisher)
+        db_session.flush()
+        db_session.expire(other, ["oidc_publishers"])
+        assert bool(jwt_request.has_permission(Permissions.ProjectsUpload, other)) == (
+            not narrowed_upload
+        )
+        assert jwt_request.headers["Authorization"] == original_header
+
+    def test_unrelated_project_denies(self, jwt_request):
+        other = ProjectFactory(oidc_publishers=[GitHubPublisherFactory()])
+        assert not jwt_request.has_permission(Permissions.ProjectsUpload, other)
+
+    def test_project_context_required_even_with_granting_acl(
+        self, jwt_request, publisher, publisher_project
+    ):
+        context = types.SimpleNamespace(
+            id=publisher_project.id,
+            __acl__=[(Allow, f"oidc:{publisher.id}", Permissions.ProjectsUpload)],
+        )
+        assert not jwt_request.has_permission(Permissions.ProjectsUpload, context)
+
+    def test_upload_grant_does_not_allow_other_permissions(
+        self, jwt_request, publisher, claims, sign, project
+    ):
+        claims["authorization_details"] = [claims["authorization_details"][0]]
+        jwt_request.headers["Authorization"] = f"Bearer {sign()}"
+        project.__acl__ = [
+            (
+                Allow,
+                f"oidc:{publisher.id}",
+                [Permissions.APIEcho, Permissions.APIObservationsAdd],
+            )
+        ]
+        assert not jwt_request.has_permission(Permissions.APIEcho, project)
+        assert not jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+
+    def test_wrong_audience_denies(self, jwt_request, claims, sign):
+        claims["aud"] = API_AUDIENCE
+        jwt_request.headers["Authorization"] = f"Bearer {sign()}"
+        assert jwt_request.identity is None
+
+    def test_deleting_publisher_denies(self, jwt_request, publisher, db_session):
+        db_session.delete(publisher)
+        db_session.flush()
+        assert jwt_request.identity is None
+
+    @pytest.mark.parametrize(
+        "status", [LifecycleStatus.Archived, LifecycleStatus.QuarantineEnter]
+    )
+    def test_project_status_still_applies(self, jwt_request, publisher_project, status):
+        publisher_project.lifecycle_status = status
+        assert not jwt_request.has_permission(
+            Permissions.ProjectsUpload, publisher_project
+        )
+
+    def test_rechecks_expiration(self, jwt_request, publisher_project, clock, claims):
+        assert jwt_request.identity is not None
+        clock.move_to(datetime.fromtimestamp(claims["exp"], UTC))
+        result = jwt_request.has_permission(
+            Permissions.ProjectsUpload, publisher_project
+        )
+        assert not result
+        assert result.reason == "invalid_api_key"
+
+    @pytest.mark.parametrize("expected_audience", [API_AUDIENCE])
+    def test_publisher_subject_is_not_upload_specific(self, jwt_request, publisher):
+        # This is an explicitly granting test ACL, not a change to the danger API.
+        context = types.SimpleNamespace(
+            __acl__=[(Allow, f"oidc:{publisher.id}", Permissions.APIEcho)]
+        )
+        assert jwt_request.has_permission(Permissions.APIEcho, context)
+
+    @pytest.mark.parametrize("scheme", ["Basic", "Token"])
+    def test_signed_publisher_jwt_is_bearer_only(self, jwt_request, sign, scheme):
+        token = sign()
+        if scheme == "Basic":
+            token = base64.b64encode(f"__token__:{token}".encode()).decode()
+        jwt_request.headers["Authorization"] = f"{scheme} {token}"
+        assert jwt_request.identity is None
+
+    @pytest.mark.parametrize("expected_audience", [API_AUDIENCE])
+    def test_publisher_cannot_report_observations_even_with_permission_wide_grant(
+        self, jwt_request, claims, sign, publisher_project
+    ):
+        claims["authorization_details"] = [
+            {"type": "warehouse", "actions": ["api:observations:add"]}
+        ]
+        jwt_request.headers["Authorization"] = f"Bearer {sign()}"
+        assert isinstance(jwt_request.identity, PublisherTokenContext)
+        assert not jwt_request.has_permission(
+            Permissions.APIObservationsAdd, publisher_project
+        )
