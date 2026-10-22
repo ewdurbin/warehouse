@@ -32,7 +32,8 @@ def permits(verified: VerifiedJWT, identity, context, permission) -> bool:
         ) != str(verified.subject.id):
             return False
     else:
-        return False
+        # Reject malformed runtime values even though the typed enum is exhaustive.
+        return False  # type: ignore[unreachable]
 
     if not isinstance(permission, Permissions):
         return False
