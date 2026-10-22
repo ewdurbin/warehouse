@@ -452,12 +452,22 @@ silently disabling verification. Multiple key IDs support overlapping
 verification keys during rotation. Changing settings or keys requires rebuilding
 the application configuration; no token-supplied URL or key is loaded.
 
-Token issuance, deployment activation, and per-token revocation remain follow-up
-work; the verifier currently provides signature and expiration enforcement, not
-a revocation store. Before enabling JWT authentication in a deployment, resolve
-those lifecycle decisions and adapt the upload handler's macaroon-specific
-credential handling. User upload email and MFA requirements remain the upload
-handler's responsibility.
+`warehouse.jwt` provides a database-backed registry with only a UUIDv7 `id`
+(for the JWT's `jti`) and indexed `expires_at`. Its request-scoped `IJWTRegistry`
+service registers fresh IDs, checks existence and expiration without caching,
+and revokes IDs by deleting their rows. Registration and revocation participate
+in the caller's transaction; commit before returning a token or acknowledging
+revocation. An hourly task deletes expired rows, but expiration is enforced even
+if cleanup has not run. The registry stores no claims or credentials and does not
+replace signature, audience, scope, or live resource authorization checks.
+
+The JWT verifier is **not yet connected to the registry**. Token issuance,
+registry enforcement, the burn endpoint, and deployment activation remain
+follow-up work. Before enabling JWT authentication in a deployment, complete
+that integration and adapt the upload handler's macaroon-specific credential
+handling. User upload email and MFA requirements remain the upload handler's
+responsibility. The existing verifier still enforces the five-minute lifetime
+limit; the general registry does not define token-profile lifetime policy.
 
 ## 5. Authorization: how `permits` decides
 

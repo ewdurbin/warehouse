@@ -493,6 +493,7 @@ def test_configure(monkeypatch, mocker, settings, environment, jwt_environment):
             mocker.call(".email"),
             mocker.call(".accounts"),
             mocker.call(".macaroons"),
+            mocker.call(".jwt"),
             mocker.call(".oidc"),
             mocker.call(".attestations"),
             mocker.call(".manage"),
