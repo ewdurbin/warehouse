@@ -90,7 +90,7 @@ def claims():
 
 @pytest.fixture
 def headers():
-    return {"alg": "RS256", "typ": "warehouse-api-key+jwt", "kid": "current"}
+    return {"alg": "RS256", "typ": "pypi-access+jwt", "kid": "current"}
 
 
 @pytest.fixture
