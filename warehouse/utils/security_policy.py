@@ -23,25 +23,33 @@ class AuthenticationMethod(enum.Enum):
     BASIC_AUTH = "basic-auth"
     SESSION = "session"
     MACAROON = "macaroon"
-    # Placeholder for the Maintainer API, the key-authenticated surface kept
-    # distinct from Upload API Tokens (macaroons). No policy implements it yet.
+    # JWT-backed API keys for uploads and the Maintainer API, distinct from
+    # macaroon API tokens. The JWT verifier is disabled by default.
     API_KEY = "api-key"
 
 
 # Which AuthenticationMethods may grant a given Permission. Anything not in
 # this table defaults to SESSION-only (browser flows).
 #
-# MACAROON should long-term only grant ProjectsUpload. The APIEcho and
-# APIObservationsAdd entries are transitional and go away once the Maintainer
-# API takes over those endpoints. Don't add new MACAROON entries here; new API
-# endpoints authenticate with API_KEY instead.
+# MACAROON should long-term only grant ProjectsUpload. Its APIEcho and
+# APIObservationsAdd allowances are transitional and go away once the
+# Maintainer API takes over those endpoints. Don't add new MACAROON entries
+# here; new API endpoints authenticate with API_KEY instead.
 PERMISSION_AUTH_METHODS: dict[Permissions, frozenset[AuthenticationMethod]] = {
     Permissions.ProjectsUpload: frozenset(
-        {AuthenticationMethod.MACAROON, AuthenticationMethod.BASIC_AUTH}
+        {
+            AuthenticationMethod.MACAROON,
+            AuthenticationMethod.BASIC_AUTH,
+            AuthenticationMethod.API_KEY,
+        }
     ),
-    # Transitional: move to the Maintainer API, then delete.
-    Permissions.APIEcho: frozenset({AuthenticationMethod.MACAROON}),
-    Permissions.APIObservationsAdd: frozenset({AuthenticationMethod.MACAROON}),
+    # Transitional: remove MACAROON when these move to the Maintainer API.
+    Permissions.APIEcho: frozenset(
+        {AuthenticationMethod.MACAROON, AuthenticationMethod.API_KEY}
+    ),
+    Permissions.APIObservationsAdd: frozenset(
+        {AuthenticationMethod.MACAROON, AuthenticationMethod.API_KEY}
+    ),
 }
 
 

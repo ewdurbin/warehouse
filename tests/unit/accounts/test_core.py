@@ -145,6 +145,9 @@ def test_includeme(config, mocker):
     macaroon_policy_cls = mocker.patch.object(
         accounts, "MacaroonSecurityPolicy", autospec=True
     )
+    jwt_policy_cls = mocker.patch.object(
+        accounts.jwt_security_policy, "JWTSecurityPolicy", autospec=True
+    )
 
     accounts.includeme(config)
 
@@ -213,6 +216,7 @@ def test_includeme(config, mocker):
             session_policy_cls.return_value,
             basic_policy_cls.return_value,
             macaroon_policy_cls.return_value,
+            jwt_policy_cls.return_value,
         ]
     )
     assert (

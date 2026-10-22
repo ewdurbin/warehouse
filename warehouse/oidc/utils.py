@@ -109,7 +109,8 @@ def find_publisher_by_issuer(
 class PublisherTokenContext:
     """
     This class supports `MacaroonSecurityPolicy` in
-    `warehouse.macaroons.security_policy`.
+    `warehouse.macaroons.security_policy` and `JWTSecurityPolicy` in
+    `warehouse.jwt.security_policy`.
 
     It is a wrapper containing both the signed claims associated with an OIDC
     authenticated request and its `OIDCPublisher` DB model. We use it to smuggle

@@ -33,10 +33,42 @@ class TestPermissionAllowedByAuthenticationMethod:
         "permission",
         [
             Permissions.ProjectsUpload,
+            Permissions.APIEcho,
+            Permissions.APIObservationsAdd,
+        ],
+    )
+    def test_api_key_allowed_permissions(self, permission):
+        assert permission_allowed_by_authentication_method(
+            permission, AuthenticationMethod.API_KEY
+        )
+
+    @pytest.mark.parametrize(
+        "permission",
+        [
+            permission
+            for permission in Permissions
+            if permission
+            not in {
+                Permissions.ProjectsUpload,
+                Permissions.APIEcho,
+                Permissions.APIObservationsAdd,
+            }
+        ]
+        + ["nonexistent", "projects:upload"],
+    )
+    def test_api_key_disallowed_permissions(self, permission):
+        assert not permission_allowed_by_authentication_method(
+            permission, AuthenticationMethod.API_KEY
+        )
+
+    @pytest.mark.parametrize(
+        "permission",
+        [
+            Permissions.ProjectsUpload,
             # TODO: Once the Maintainer API takes over these endpoints, move
             #       APIEcho and APIObservationsAdd to
-            #       test_macaroon_disallowed_permissions (they'll be dropped
-            #       from PERMISSION_AUTH_METHODS).
+            #       test_macaroon_disallowed_permissions (only API_KEY will
+            #       remain allowed for those permissions).
             Permissions.APIEcho,
             Permissions.APIObservationsAdd,
         ],

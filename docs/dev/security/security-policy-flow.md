@@ -538,3 +538,11 @@ resolved user or publisher context. It matches each permission to its own
 optional project restriction without mixing actions from different details.
 Permission-wide grants do not bypass project context requirements or live ACLs.
 Unsupported identity kinds, permissions, and contexts are rejected.
+
+`JWTSecurityPolicy` follows the existing policies and only considers Bearer
+credentials on explicitly opted-in API_KEY routes. Authentication checks the
+signature and registry, then resolves the typed user or publisher. Authorization
+reverifies the original credential and rechecks liveness, identity binding,
+permission/resource restrictions, and live ACLs. Cached identity does not bypass
+these checks. Basic/Token JWT transport is not supported. The registered verifier
+still rejects every JWT until trusted configuration is introduced.
