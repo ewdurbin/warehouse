@@ -10,6 +10,8 @@ from warehouse.jwt.profile import (
     valid_authorization_details,
 )
 
+PROJECT_ID = "95ea64e2-764c-4320-a4e5-991df49f261f"
+
 
 def test_profile_constants():
     assert MEDIA_TYPE == "pypi-access+jwt"
@@ -49,7 +51,7 @@ def test_project_narrowing(actions):
             {
                 "type": "warehouse",
                 "actions": actions,
-                "identifier": "project:95ea64e2-764c-4320-a4e5-991df49f261f",
+                "identifier": f"project:{PROJECT_ID}",
             }
         ]
     )
@@ -89,7 +91,32 @@ def test_invalid_actions(actions):
 
 @pytest.mark.parametrize(
     "identifier",
-    [None, "", {}, "project:bad", "organization:95ea64e2-764c-4320-a4e5-991df49f261f"],
+    [
+        None,
+        False,
+        1,
+        [],
+        {},
+        "",
+        "*",
+        PROJECT_ID,
+        {"kind": "project", "id": PROJECT_ID},
+        "project:",
+        "project:bad",
+        "project:*",
+        f":{PROJECT_ID}",
+        f"PROJECT:{PROJECT_ID}",
+        f"project:{PROJECT_ID.upper()}",
+        f"project:{{{PROJECT_ID}}}",
+        f"project:{PROJECT_ID.replace('-', '')}",
+        f"project:{PROJECT_ID}:extra",
+        f"project:{PROJECT_ID}\n",
+        f" project:{PROJECT_ID}",
+        f"organization:{PROJECT_ID}",
+        f"user:{PROJECT_ID}",
+        f"publisher:{PROJECT_ID}",
+        f"publisher-projects:{PROJECT_ID}",
+    ],
 )
 def test_invalid_identifier(identifier):
     assert not valid_authorization_details(
@@ -109,7 +136,7 @@ def test_identifier_must_support_every_action():
             {
                 "type": "warehouse",
                 "actions": ["projects:upload", "api:echo"],
-                "identifier": "project:95ea64e2-764c-4320-a4e5-991df49f261f",
+                "identifier": f"project:{PROJECT_ID}",
             }
         ]
     )
