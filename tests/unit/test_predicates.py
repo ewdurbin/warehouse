@@ -6,6 +6,7 @@ import types
 import pytest
 
 from freezegun import freeze_time
+from pyramid import testing
 from pyramid.exceptions import ConfigurationError
 from pyramid.httpexceptions import HTTPSeeOther
 
@@ -15,8 +16,10 @@ from warehouse.predicates import (
     AuthMethodsPredicate,
     DomainPredicate,
     HeadersPredicate,
+    JWTAudiencePredicate,
     auth_methods_for_route,
     includeme,
+    jwt_audience_for_route,
 )
 from warehouse.subscriptions.models import StripeSubscriptionStatus
 from warehouse.utils.security_policy import AuthenticationMethod
@@ -101,6 +104,49 @@ class TestAuthMethodsForRoute:
     def test_returns_none_when_no_auth_methods_predicate(self):
         route = types.SimpleNamespace(predicates=[DomainPredicate("pypi.io", None)])
         assert auth_methods_for_route(route) is None
+
+
+class TestJWTAudiencePredicate:
+    @pytest.mark.parametrize("audience_name", ["upload", "api"])
+    def test_valid_audience(self, audience_name):
+        predicate = JWTAudiencePredicate(audience_name, None)
+        assert predicate.val == audience_name
+        assert predicate.text() == f"jwt_audience = {audience_name!r}"
+        assert predicate.phash() == predicate.text()
+        assert predicate(None, None) is True
+
+    @pytest.mark.parametrize(
+        "audience_name",
+        [None, "", "API", "unknown", "https://warehouse.example/api", ["api"], {}],
+    )
+    def test_invalid_audience(self, audience_name):
+        with pytest.raises(ConfigurationError, match="jwt_audience must be"):
+            JWTAudiencePredicate(audience_name, None)
+
+    def test_invalid_audience_fails_configuration(self):
+        with testing.testConfig() as config:
+            config.include("warehouse.predicates")
+            with pytest.raises(ConfigurationError, match="jwt_audience must be"):
+                config.add_route("invalid", "/invalid", jwt_audience="unknown")
+
+
+class TestJWTAudienceForRoute:
+    @pytest.mark.parametrize("audience_name", ["upload", "api"])
+    def test_returns_predicate_val(self, audience_name):
+        route = types.SimpleNamespace(
+            predicates=[
+                AuthMethodsPredicate({"api-key"}, None),
+                JWTAudiencePredicate(audience_name, None),
+            ]
+        )
+        assert jwt_audience_for_route(route) == audience_name
+
+    @pytest.mark.parametrize(
+        "predicates", [[], [AuthMethodsPredicate({"api-key"}, None)]]
+    )
+    def test_returns_none_when_undeclared(self, predicates):
+        route = types.SimpleNamespace(predicates=predicates)
+        assert jwt_audience_for_route(route) is None
 
 
 class TestHeadersPredicate:
@@ -293,21 +339,17 @@ class TestActiveOrganizationPredicate:
         route_path.assert_called_once_with("manage.organizations")
 
 
-def test_includeme(pyramid_config, mocker):
-    add_route_predicate = mocker.patch.object(
-        pyramid_config, "add_route_predicate", autospec=True
-    )
-    add_view_predicate = mocker.patch.object(
-        pyramid_config, "add_view_predicate", autospec=True
-    )
-    includeme(pyramid_config)
+def test_includeme(mocker):
+    config = mocker.Mock(spec=["add_route_predicate", "add_view_predicate"])
+    includeme(config)
 
-    assert add_route_predicate.call_args_list == [
+    assert config.add_route_predicate.call_args_list == [
         mocker.call("domain", DomainPredicate),
         mocker.call("auth_methods", AuthMethodsPredicate),
+        mocker.call("jwt_audience", JWTAudiencePredicate),
     ]
 
-    assert add_view_predicate.call_args_list == [
+    assert config.add_view_predicate.call_args_list == [
         mocker.call("require_headers", HeadersPredicate),
         mocker.call("require_active_organization", ActiveOrganizationPredicate),
     ]

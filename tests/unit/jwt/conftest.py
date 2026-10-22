@@ -6,10 +6,19 @@ from uuid import UUID
 import jwt
 import pytest
 
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from freezegun import freeze_time
 
-from tests.common.jwt import API_AUDIENCE, ISSUER, JTI, NOW, PROJECT_ID, USER_ID
+from tests.common.jwt import (
+    API_AUDIENCE,
+    ISSUER,
+    JTI,
+    NOW,
+    PROJECT_ID,
+    UPLOAD_AUDIENCE,
+    USER_ID,
+)
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
     AuthorizationDetail,
@@ -125,3 +134,22 @@ def registered_jti(jwt_registry, clock, claims):
     token_id = jwt_registry.register(datetime.fromtimestamp(claims["exp"], UTC))
     claims["jti"] = str(token_id)
     return token_id
+
+
+@pytest.fixture
+def jwt_settings(signing_keys):
+    return {
+        "warehouse.jwt.enabled": True,
+        "warehouse.jwt.issuer": ISSUER,
+        "warehouse.jwt.upload_audience": UPLOAD_AUDIENCE,
+        "warehouse.jwt.api_audience": API_AUDIENCE,
+        "warehouse.jwt.verification_keys": {
+            kid: key.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+            for kid, key in zip(("current", "previous"), signing_keys, strict=True)
+        },
+    }
