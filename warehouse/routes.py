@@ -649,7 +649,8 @@ def includeme(config):
     config.add_route(
         "api.echo",
         "/danger-api/echo",
-        auth_methods={"macaroon"},
+        auth_methods={"macaroon", "api-key"},
+        jwt_audience="api",
         domain=warehouse,
     )
     config.add_route(
@@ -657,7 +658,8 @@ def includeme(config):
         "/danger-api/projects/{name}/observations",
         factory="warehouse.packaging.models:ProjectFactory",
         traverse="/{name}",
-        auth_methods={"macaroon"},
+        auth_methods={"macaroon", "api-key"},
+        jwt_audience="api",
         domain=warehouse,
     )
 

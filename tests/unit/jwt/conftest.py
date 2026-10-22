@@ -11,7 +11,10 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from freezegun import freeze_time
+from pyramid import testing
 from pyramid.authorization import Authenticated
+from pyramid.interfaces import IRoutesMapper
+from pyramid.request import Request, apply_request_extensions
 
 from tests.common.jwt import (
     API_AUDIENCE,
@@ -22,6 +25,7 @@ from tests.common.jwt import (
     UPLOAD_AUDIENCE,
     USER_ID,
 )
+from warehouse.accounts.interfaces import IUserService
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
     AuthorizationDetail,
@@ -32,8 +36,13 @@ from warehouse.jwt.claims import (
     SubjectRef,
     VerifiedJWT,
 )
-from warehouse.jwt.verifier import WarehouseJWTVerifier
+from warehouse.jwt.security_policy import JWTSecurityPolicy
+from warehouse.jwt.verifier import (
+    WarehouseJWTVerifier,
+)
 from warehouse.packaging.models import Project
+from warehouse.routes import includeme as include_routes
+from warehouse.utils.security_policy import MultiSecurityPolicy
 
 
 @pytest.fixture
@@ -169,3 +178,64 @@ def jwt_settings(signing_keys):
             for kid, key in zip(("current", "previous"), signing_keys, strict=True)
         },
     }
+
+
+@pytest.fixture
+def jwt_enabled():
+    return True
+
+
+@pytest.fixture
+def make_request(
+    jwt_settings, jwt_enabled, user, mocker, clock, registered_jti, db_session
+):
+    jwt_settings.pop("warehouse.jwt.enabled")
+    if jwt_enabled is not None:
+        jwt_settings["warehouse.jwt.enabled"] = jwt_enabled
+    user_service = mocker.Mock(spec=["get_user", "is_disabled"])
+    user_service.get_user.return_value = user
+    user_service.is_disabled.return_value = (False, None)
+    jwt_settings.update(
+        {
+            "docs.url": "https://docs.example",
+            "files.url": "https://files.example/{path}",
+        }
+    )
+    with testing.testConfig(settings=jwt_settings) as config:
+        config.include("pyramid_services")
+        config.include("warehouse.predicates")
+        config.include("warehouse.legacy.action_routing")
+        config.include("warehouse.forklift")
+        # Install the application's actual add_route declarations without
+        # unrelated redirect/template/XML-RPC view configuration.
+        route_config = mocker.Mock()
+        route_config.get_settings.return_value = config.get_settings()
+        route_config.registry = config.registry
+        route_config.add_route = config.add_route
+        include_routes(route_config)
+        for audience_name in ("api", "upload"):
+            config.add_route(
+                f"new-endpoint.{audience_name}",
+                f"/audience-test/{audience_name}",
+                auth_methods={"api-key"},
+                jwt_audience=audience_name,
+            )
+        config.add_directive("add_periodic_task", mocker.Mock())
+        config.include("warehouse.jwt")
+        config.register_service(user_service, IUserService)
+        config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
+        config.commit()
+        mapper = config.registry.getUtility(IRoutesMapper)
+
+        def make_request(path, token):
+            request = Request.blank(path)
+            request.registry = config.registry
+            apply_request_extensions(request)
+            request.db = db_session
+            request.headers["Authorization"] = f"Bearer {token}"
+            match = mapper(request)
+            request.matched_route = match["route"]
+            request.matchdict = match["match"]
+            return request
+
+        yield make_request
