@@ -29,8 +29,9 @@ class IJWTVerifier(Interface):
         This performs no database lookups or resource authorization. Callers must
         check registry liveness, resolve the typed subject and its current status,
         and enforce authorization details, the method allowlist, and live ACLs.
-        Reverify at authorization time, even when request identity is cached;
-        the resolved identity must still match the verified subject kind and ID.
+        Reverify and recheck registry liveness at authorization time, even when
+        request identity is cached; the resolved identity must still match the
+        verified subject kind and ID.
         """
 
 

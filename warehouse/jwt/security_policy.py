@@ -11,7 +11,7 @@ from warehouse.cache.http import add_vary_callback
 from warehouse.errors import WarehouseDenied
 from warehouse.jwt import authorization
 from warehouse.jwt.claims import SubjectKind
-from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.oidc.models import OIDCPublisher
 from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.predicates import auth_methods_for_route
@@ -66,6 +66,10 @@ class JWTSecurityPolicy:
         if verified is None:
             return None
 
+        registry = request.find_service(IJWTRegistry, context=None)
+        if not registry.is_active(verified.jti):
+            return None
+
         # Resolve only the explicitly named kind. A UUID missing from one table
         # must never fall back to another kind of identity.
         if verified.subject.kind == SubjectKind.USER:
@@ -111,10 +115,15 @@ class JWTSecurityPolicy:
             )
 
         verifier = request.find_service(IJWTVerifier, context=None)
-        # Recheck time bounds even when identity was cached earlier in the request.
+        # Like macaroons, cached identity does not bypass credential validation.
         verified = verifier.verify(token)
-        if verified is None or not authorization.permits(
-            verified, request.identity, context, permission
+        registry = request.find_service(IJWTRegistry, context=None)
+        if (
+            verified is None
+            or not registry.is_active(verified.jti)
+            or not authorization.permits(
+                verified, request.identity, context, permission
+            )
         ):
             return WarehouseDenied(
                 "Invalid or insufficiently scoped API key",

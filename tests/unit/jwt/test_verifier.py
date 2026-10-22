@@ -22,6 +22,8 @@ from pyramid.authorization import Allow, Authenticated
 from pyramid.exceptions import ConfigurationError
 from pyramid.interfaces import IRoutesMapper
 from pyramid.request import Request, apply_request_extensions
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 from zope.interface.verify import verifyClass
 
 from tests.common.db.accounts import UserFactory
@@ -40,9 +42,14 @@ from warehouse.jwt.claims import (
     SubjectRef,
     VerifiedJWT,
 )
-from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
+from warehouse.jwt.models import IssuedJWT
 from warehouse.jwt.security_policy import JWTSecurityPolicy
-from warehouse.jwt.services import DisabledJWTVerifier, jwt_verifier_factory
+from warehouse.jwt.services import (
+    DatabaseJWTRegistry,
+    DisabledJWTVerifier,
+    jwt_verifier_factory,
+)
 from warehouse.jwt.verifier import (
     WarehouseJWTVerifier,
     WarehouseJWTVerifierFactory,
@@ -107,6 +114,13 @@ def claims():
             },
         ],
     }
+
+
+@pytest.fixture
+def registered_jti(jwt_registry, clock, claims):
+    token_id = jwt_registry.register(datetime.fromtimestamp(claims["exp"], UTC))
+    claims["jti"] = str(token_id)
+    return token_id
 
 
 @pytest.fixture
@@ -332,7 +346,9 @@ def jwt_enabled():
 
 
 @pytest.fixture
-def make_request(jwt_settings, jwt_enabled, user, mocker, clock):
+def make_request(
+    jwt_settings, jwt_enabled, user, mocker, clock, registered_jti, db_session
+):
     jwt_settings.pop("warehouse.jwt.enabled")
     if jwt_enabled is not None:
         jwt_settings["warehouse.jwt.enabled"] = jwt_enabled
@@ -375,6 +391,7 @@ def make_request(jwt_settings, jwt_enabled, user, mocker, clock):
             request = Request.blank(path)
             request.registry = config.registry
             apply_request_extensions(request)
+            request.db = db_session
             request.headers["Authorization"] = f"Bearer {token}"
             match = mapper(request)
             request.matched_route = match["route"]
@@ -1051,13 +1068,14 @@ class TestWarehouseJWTVerifier:
 
 class TestSignedJWTPolicy:
     @pytest.fixture
-    def jwt_request(self, verifier, user, sign, mocker):
+    def jwt_request(self, verifier, user, sign, mocker, jwt_registry, registered_jti):
         user_service = mocker.Mock(spec=["get_user", "is_disabled"])
         user_service.get_user.return_value = user
         user_service.is_disabled.return_value = (False, None)
         with testing.testConfig() as config:
             config.include("pyramid_services")
             config.register_service(verifier, IJWTVerifier)
+            config.register_service(jwt_registry, IJWTRegistry)
             config.register_service(user_service, IUserService)
             config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
             config.commit()
@@ -1247,6 +1265,202 @@ class TestSignedJWTPolicy:
         assert jwt_request.has_permission(Permissions.APIObservationsAdd, project)
 
 
+class TestRegisteredJWTPolicy:
+    @pytest.fixture
+    def user(self, db_session):
+        return UserFactory()
+
+    @pytest.fixture(params=["user", "publisher"])
+    def subject_kind(self, request):
+        return request.param
+
+    @pytest.fixture
+    def subject(self, subject_kind, user):
+        return user if subject_kind == "user" else GitHubPublisherFactory()
+
+    @pytest.fixture(autouse=True)
+    def upload_claims(self, claims, subject, subject_kind):
+        claims.update(
+            sub=str(subject.id),
+            subject_kind=subject_kind,
+            aud=UPLOAD_AUDIENCE,
+            authorization_details=[
+                {"type": "warehouse", "actions": ["projects:upload"]}
+            ],
+        )
+
+    @pytest.fixture
+    def project(self, subject, subject_kind):
+        if subject_kind == "publisher":
+            return ProjectFactory(oidc_publishers=[subject])
+        project = ProjectFactory()
+        RoleFactory(project=project, user=subject, role_name="Owner")
+        return project
+
+    def test_rechecks_credential_and_registry_for_each_operation(
+        self, make_request, sign, project, registered_jti, mocker
+    ):
+        token = sign()
+        request = make_request("/legacy/?:action=file_upload", token)
+        registry = request.find_service(IJWTRegistry, context=None)
+        active_check = mocker.spy(registry, "is_active")
+        verifier = request.find_service(IJWTVerifier, context=None)
+        verify = mocker.spy(verifier, "verify")
+
+        assert request.identity is not None
+        assert request.authentication_method == AuthenticationMethod.API_KEY
+        assert request.has_permission(Permissions.ProjectsUpload, project)
+        assert not request.has_permission(Permissions.ProjectsUpload, ProjectFactory())
+        assert not request.has_permission(Permissions.APIObservationsAdd, project)
+        assert not request.has_permission(Permissions.AccountManage, project)
+        assert request.has_permission(Permissions.ProjectsUpload, project)
+        # Authentication plus four API_KEY permission checks; AccountManage is
+        # denied by the method allowlist without needing credential validation.
+        assert active_check.call_args_list == [mocker.call(registered_jti)] * 5
+        assert verify.call_args_list == [mocker.call(token)] * 5
+
+    @pytest.mark.parametrize("state", ["missing", "expired", "revoked"])
+    def test_inactive_registry_entry_cannot_authenticate(
+        self,
+        make_request,
+        sign,
+        claims,
+        project,
+        jwt_registry,
+        registered_jti,
+        db_session,
+        state,
+        mocker,
+    ):
+        if state == "missing":
+            # Another active registry entry cannot authorize this JTI.
+            claims["jti"] = OTHER_ID
+        elif state == "expired":
+            db_session.get(IssuedJWT, registered_jti).expires_at = datetime.now(UTC)
+        else:
+            jwt_registry.revoke(registered_jti)
+
+        request = make_request("/legacy/?:action=file_upload", sign())
+        registry = request.find_service(IJWTRegistry, context=None)
+        active_check = mocker.spy(registry, "is_active")
+        assert request.identity is None
+        assert not request.has_permission(Permissions.ProjectsUpload, project)
+        assert not hasattr(request, "authentication_method")
+        active_check.assert_called_once_with(UUID(claims["jti"]))
+
+    @pytest.mark.parametrize("authenticated", [False, True])
+    def test_database_error_does_not_allow_access(
+        self, make_request, sign, project, db_session, mocker, authenticated
+    ):
+        request = make_request("/legacy/?:action=file_upload", sign())
+        if authenticated:
+            assert request.identity is not None
+        mocker.patch.object(
+            db_session,
+            "scalar",
+            side_effect=OperationalError(
+                "statement", {}, Exception("database unavailable")
+            ),
+        )
+        with pytest.raises(OperationalError):
+            request.has_permission(Permissions.ProjectsUpload, project)
+        assert hasattr(request, "authentication_method") == authenticated
+
+    def test_invalid_signature_does_not_query_registry(
+        self, make_request, sign, signing_keys, mocker
+    ):
+        request = make_request(
+            "/legacy/?:action=file_upload", sign(key=signing_keys[1])
+        )
+        registry = request.find_service(IJWTRegistry, context=None)
+        active_check = mocker.spy(registry, "is_active")
+        assert request.identity is None
+        active_check.assert_not_called()
+
+    @pytest.mark.parametrize("expiration", ["token", "registry"])
+    def test_expiration_denies_authorization_with_cached_identity(
+        self,
+        make_request,
+        sign,
+        claims,
+        project,
+        registered_jti,
+        db_session,
+        clock,
+        expiration,
+        mocker,
+    ):
+        expires_at = datetime.fromtimestamp(
+            NOW + 1 if expiration == "registry" else claims["exp"], UTC
+        )
+        if expiration == "registry":
+            db_session.get(IssuedJWT, registered_jti).expires_at = expires_at
+        token = sign()
+        request = make_request("/legacy/?:action=file_upload", token)
+        active_check = mocker.spy(
+            request.find_service(IJWTRegistry, context=None), "is_active"
+        )
+        assert request.identity is not None
+
+        clock.move_to(expires_at)
+        result = request.has_permission(Permissions.ProjectsUpload, project)
+        assert not result
+        assert result.reason == "invalid_api_key"
+        # Expired JWTs fail verification before consulting the registry again.
+        assert active_check.call_args_list == [mocker.call(registered_jti)] * (
+            2 if expiration == "registry" else 1
+        )
+
+        fresh_request = make_request("/legacy/?:action=file_upload", token)
+        assert fresh_request.identity is None
+        assert not fresh_request.has_permission(Permissions.ProjectsUpload, project)
+
+    @pytest.mark.parametrize("already_authorized", [False, True])
+    def test_committed_revocation_denies_authorization_with_cached_identity(
+        self,
+        make_request,
+        sign,
+        claims,
+        project,
+        app_config,
+        mocker,
+        already_authorized,
+    ):
+        # The request's DB transaction remains open while another one revokes.
+        with Session(app_config.registry["sqlalchemy.engine"]) as writer:
+            issuer = DatabaseJWTRegistry(writer)
+            token_id = issuer.register(datetime.fromtimestamp(claims["exp"], UTC))
+            writer.commit()
+            try:
+                claims["jti"] = str(token_id)
+                token = sign()
+                request = make_request("/legacy/?:action=file_upload", token)
+                active_check = mocker.spy(
+                    request.find_service(IJWTRegistry, context=None), "is_active"
+                )
+                assert request.identity is not None
+                if already_authorized:
+                    assert request.has_permission(Permissions.ProjectsUpload, project)
+
+                issuer.revoke(token_id)
+                writer.commit()
+                result = request.has_permission(Permissions.ProjectsUpload, project)
+                assert not result
+                assert result.reason == "invalid_api_key"
+                assert active_check.call_args_list == [mocker.call(token_id)] * (
+                    3 if already_authorized else 2
+                )
+
+                fresh_request = make_request("/legacy/?:action=file_upload", token)
+                assert fresh_request.identity is None
+                assert not fresh_request.has_permission(
+                    Permissions.ProjectsUpload, project
+                )
+            finally:
+                issuer.revoke(token_id)
+                writer.commit()
+
+
 class TestSignedObservationJWTPolicy:
     @pytest.fixture
     def user(self, db_session):
@@ -1401,6 +1615,8 @@ class TestSignedPublisherJWTPolicy:
         mocker,
         expected_audience,
         narrowed_upload,
+        jwt_registry,
+        registered_jti,
     ):
         upload_detail = {"type": "warehouse", "actions": ["projects:upload"]}
         if narrowed_upload:
@@ -1418,6 +1634,7 @@ class TestSignedPublisherJWTPolicy:
         with testing.testConfig() as config:
             config.include("pyramid_services")
             config.register_service(verifier, IJWTVerifier)
+            config.register_service(jwt_registry, IJWTRegistry)
             config.register_service(user_service, IUserService)
             config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
             config.commit()

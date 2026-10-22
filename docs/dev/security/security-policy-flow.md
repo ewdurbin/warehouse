@@ -346,7 +346,10 @@ bounds before returning an immutable `VerifiedJWT`. Its typed subject, JTI,
 issuer, audience, UTC timestamps, and normalized authorization details contain no
 request or database models. Invalid tokens return `None`; infrastructure or
 configuration failures raise. Verification does not establish a live identity
-or grant access by itself.
+or grant access by itself. After verification, the policy checks
+`IJWTRegistry.is_active(verified.jti)` before resolving the subject. Missing,
+expired, or revoked registry entries cannot authenticate; database errors
+propagate rather than allowing access.
 
 The policy resolves the explicitly named subject kind: `user` loads a current,
 enabled user and returns `UserContext(user, None)`; `publisher` loads an existing
@@ -356,13 +359,20 @@ Publisher identities retain their `oidc:<id>` principals, not user principals.
 Filtered OIDC provenance will be added with Trusted Publisher issuance; it is
 not part of this contract yet.
 
+Like the macaroon policy, the JWT policy caches the identity and original
+credential, not a successful validation result. Authorization rechecks token
+validity and registry liveness even when the request has already authenticated.
+Expiration or a revocation committed before the registry query prevents a later
+permission check from succeeding within that same request. This does not cancel
+work that has already passed authorization.
+
 Authorization requires all three gates to pass, in order:
 
 1. The `API_KEY` authentication-method permission allowlist.
-2. Fresh verification of the original token, followed by
-   `warehouse.jwt.authorization.permits`, which binds the subject kind and ID
-   to the resolved identity and checks the requested permission and any resource
-   narrowing attached to the same authorization details object.
+2. Fresh verification of the original token and a fresh registry liveness check,
+   followed by `warehouse.jwt.authorization.permits`, which binds the subject
+   kind and ID to the resolved identity and checks the requested permission and
+   any resource narrowing attached to the same authorization details object.
 3. The existing resource ACL evaluated with the identity's current principals.
 
 The default `DisabledJWTVerifier` always returns `None` from `verify`.
@@ -384,7 +394,7 @@ Warehouse-issued token profile, but requires explicit configuration to enable:
   `0 < exp - iat <= 300`: exactly five minutes is allowed, but anything longer
   is rejected even in its final five minutes. `nbf` does not shorten the issued
   lifetime for this check. The verifier rechecks validity on every authorization
-  call, even if request identity has already been cached.
+  call that passes the method allowlist, even if request identity is cached.
 - `authorization_details` is a required, nonempty array, using the JWT claim
   described by [RFC 9396 section 9.1](https://www.rfc-editor.org/rfc/rfc9396.html#section-9.1).
   Warehouse defines a small profile of its
@@ -552,13 +562,14 @@ revocation. An hourly task deletes expired rows, but expiration is enforced even
 if cleanup has not run. The registry stores no claims or credentials and does not
 replace signature, audience, scope, or live resource authorization checks.
 
-The JWT verifier is **not yet connected to the registry**. Token issuance,
-registry enforcement, the burn endpoint, and deployment activation remain
-follow-up work. Before enabling JWT authentication in a deployment, complete
-that integration and adapt the upload handler's macaroon-specific credential
-handling. User upload email and MFA requirements remain the upload handler's
-responsibility. The existing verifier still enforces the five-minute lifetime
-limit; the general registry does not define token-profile lifetime policy.
+The JWT policy enforces registry liveness at authentication and authorization;
+the cryptographic verifier remains independent of the database. Token issuance,
+the burn endpoint, and deployment activation remain follow-up work. Before
+enabling JWT authentication in a deployment, complete those integrations and
+adapt the upload handler's macaroon-specific credential handling. User upload
+email and MFA requirements remain the upload handler's responsibility. The
+existing verifier still enforces the five-minute lifetime limit; the general
+registry does not define token-profile lifetime policy.
 
 ## 5. Authorization: how `permits` decides
 

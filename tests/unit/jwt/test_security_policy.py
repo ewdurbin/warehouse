@@ -17,7 +17,7 @@ from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.utils import UserContext
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import SubjectKind, SubjectRef
-from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.security_policy import JWTSecurityPolicy, _extract_http_jwt
 from warehouse.oidc.models import OIDCPublisher
 from warehouse.oidc.utils import PublisherTokenContext
@@ -31,6 +31,13 @@ TOKEN = "header.payload.signature"
 def verifier(mocker):
     service = mocker.Mock(spec=["verify"])
     service.verify.return_value = None
+    return service
+
+
+@pytest.fixture
+def registry(mocker):
+    service = mocker.Mock(spec=["is_active"])
+    service.is_active.return_value = True
     return service
 
 
@@ -63,10 +70,11 @@ def policy():
 
 
 @pytest.fixture
-def jwt_request(policy, verifier, user_service):
+def jwt_request(policy, verifier, registry, user_service):
     with testing.testConfig() as config:
         config.include("pyramid_services")
         config.register_service(verifier, IJWTVerifier)
+        config.register_service(registry, IJWTRegistry)
         config.register_service(user_service, IUserService)
         config.set_security_policy(MultiSecurityPolicy([policy]))
         config.commit()
@@ -135,9 +143,10 @@ class TestJWTSecurityPolicy:
         assert jwt_request.identity is None
         verifier.verify.assert_not_called()
 
-    def test_invalid_token(self, jwt_request, verifier, user_service):
+    def test_invalid_token(self, jwt_request, verifier, registry, user_service):
         assert jwt_request.identity is None
         verifier.verify.assert_called_once_with(TOKEN)
+        registry.is_active.assert_not_called()
         user_service.get_user.assert_not_called()
         assert not hasattr(jwt_request, "authentication_method")
 
@@ -154,12 +163,15 @@ class TestJWTSecurityPolicy:
         assert jwt_request.identity is None
         user_service.is_disabled.assert_called_once_with(user.id)
 
-    def test_verified_user(self, verified, jwt_request, verifier, user_service, user):
+    def test_verified_user(
+        self, verified, jwt_request, verifier, registry, user_service, user
+    ):
         verifier.verify.return_value = verified
         assert jwt_request.identity == UserContext(user, macaroon=None)
         assert jwt_request.authenticated_userid == user.id
         assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
         verifier.verify.assert_called_once_with(TOKEN)
+        registry.is_active.assert_called_once_with(verified.jti)
         user_service.get_user.assert_called_once_with(user.id)
         user_service.is_disabled.assert_called_once_with(user.id)
 
@@ -227,7 +239,7 @@ class TestJWTSecurityPolicy:
         )
 
     def test_authorizes_the_original_credential(
-        self, grant_check, verified, jwt_request, verifier, user, mocker
+        self, grant_check, verified, jwt_request, verifier, registry, user, mocker
     ):
         verifier.verify.return_value = verified
         grant_check.return_value = True
@@ -237,8 +249,8 @@ class TestJWTSecurityPolicy:
             __acl__=[(Allow, "user:test", Permissions.APIEcho)]
         )
         assert jwt_request.has_permission(Permissions.APIEcho, context)
-        assert verifier.verify.call_count == 2
-        verifier.verify.assert_has_calls([mocker.call(TOKEN), mocker.call(TOKEN)])
+        assert verifier.verify.call_args_list == [mocker.call(TOKEN)] * 2
+        assert registry.is_active.call_args_list == [mocker.call(verified.jti)] * 2
         grant_check.assert_called_once_with(
             verified, jwt_request.identity, context, Permissions.APIEcho
         )
@@ -326,8 +338,40 @@ class TestJWTSecurityPolicy:
         with pytest.raises(RuntimeError, match="database unavailable"):
             _ = jwt_request.identity
 
+    @pytest.mark.parametrize("subject_kind", [SubjectKind.USER, SubjectKind.PUBLISHER])
+    def test_inactive_registry_entry_does_not_authenticate(
+        self,
+        jwt_request,
+        verifier,
+        verified,
+        registry,
+        user_service,
+        subject_kind,
+        mocker,
+    ):
+        verifier.verify.return_value = replace(
+            verified, subject=SubjectRef(subject_kind, verified.subject.id)
+        )
+        registry.is_active.return_value = False
+        jwt_request.db = mocker.Mock()
+        assert jwt_request.identity is None
+        registry.is_active.assert_called_once_with(verified.jti)
+        user_service.get_user.assert_not_called()
+        jwt_request.db.get.assert_not_called()
+        assert not hasattr(jwt_request, "authentication_method")
+
+    def test_registry_error_propagates(
+        self, jwt_request, verifier, verified, registry, user_service
+    ):
+        verifier.verify.return_value = verified
+        registry.is_active.side_effect = RuntimeError("registry unavailable")
+        with pytest.raises(RuntimeError, match="registry unavailable"):
+            jwt_request.has_permission(Permissions.APIEcho, types.SimpleNamespace())
+        user_service.get_user.assert_not_called()
+        assert not hasattr(jwt_request, "authentication_method")
+
     def test_reverification_failure_denies(
-        self, jwt_request, verifier, verified, grant_check, policy, mocker
+        self, jwt_request, verifier, verified, registry, grant_check, policy, mocker
     ):
         verifier.verify.side_effect = [verified, None]
         acl = mocker.spy(policy._acl, "permits")
@@ -336,6 +380,8 @@ class TestJWTSecurityPolicy:
         )
         assert not result
         assert result.reason == "invalid_api_key"
+        # Only authentication consulted the registry: reverification failed first.
+        registry.is_active.assert_called_once_with(verified.jti)
         grant_check.assert_not_called()
         acl.assert_not_called()
 
@@ -343,3 +389,33 @@ class TestJWTSecurityPolicy:
         verifier.verify.side_effect = [verified, RuntimeError("verifier unavailable")]
         with pytest.raises(RuntimeError, match="verifier unavailable"):
             jwt_request.has_permission(Permissions.APIEcho, types.SimpleNamespace())
+
+    def test_revoked_registry_entry_denies_authorization(
+        self, jwt_request, verifier, verified, registry, grant_check, policy, mocker
+    ):
+        verifier.verify.return_value = verified
+        registry.is_active.side_effect = [True, False]
+        acl = mocker.spy(policy._acl, "permits")
+        assert jwt_request.identity is not None
+
+        result = jwt_request.has_permission(
+            Permissions.APIEcho, types.SimpleNamespace()
+        )
+        assert not result
+        assert result.reason == "invalid_api_key"
+        assert registry.is_active.call_args_list == [mocker.call(verified.jti)] * 2
+        grant_check.assert_not_called()
+        acl.assert_not_called()
+
+    def test_registry_error_during_authorization_propagates(
+        self, jwt_request, verifier, verified, registry, grant_check, policy, mocker
+    ):
+        verifier.verify.return_value = verified
+        registry.is_active.side_effect = [True, RuntimeError("registry unavailable")]
+        acl = mocker.spy(policy._acl, "permits")
+        assert jwt_request.identity is not None
+
+        with pytest.raises(RuntimeError, match="registry unavailable"):
+            jwt_request.has_permission(Permissions.APIEcho, types.SimpleNamespace())
+        grant_check.assert_not_called()
+        acl.assert_not_called()
