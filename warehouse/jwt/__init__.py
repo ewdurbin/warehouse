@@ -16,6 +16,11 @@ from warehouse.jwt.tasks import delete_expired_jwts
 def includeme(config):
     settings = config.registry.settings
     config.register_service_factory(jwt_verifier_factory(settings), IJWTVerifier)
+    config.register_service_factory(
+        jwt_verifier_factory(settings, audience="upload"),
+        IJWTVerifier,
+        name="upload",
+    )
     config.register_service_factory(DatabaseJWTRegistry.create_service, IJWTRegistry)
 
     if (

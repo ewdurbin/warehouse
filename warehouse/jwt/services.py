@@ -97,6 +97,14 @@ class WarehouseJWTVerifierFactory:
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc
 
+    def for_audience(self, name):
+        """Return a verifier factory for an audience chosen by the caller.
+
+        Use a server-selected name, as the burn endpoint does for upload tokens.
+        """
+        verifier = self._verifiers[name]
+        return lambda context, request: verifier
+
     def __call__(self, context, request):
         route = request.matched_route
         if route is not None:
@@ -107,11 +115,12 @@ class WarehouseJWTVerifierFactory:
         return DisabledJWTVerifier()
 
 
-def jwt_verifier_factory(settings):
+def jwt_verifier_factory(settings, *, audience=None):
     """Enable JWT verification when public keys are configured."""
     if "warehouse.jwt.verification_keys" not in settings:
         return DisabledJWTVerifier.create_service
-    return WarehouseJWTVerifierFactory(settings)
+    factory = WarehouseJWTVerifierFactory(settings)
+    return factory if audience is None else factory.for_audience(audience)
 
 
 def _active_jwt_conditions(token_id: UUID):

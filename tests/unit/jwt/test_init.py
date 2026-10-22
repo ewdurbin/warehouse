@@ -24,6 +24,10 @@ def test_default_services_and_cleanup_schedule(app_config, db_session):
     assert isinstance(
         request.find_service(IJWTVerifier, context=None), DisabledJWTVerifier
     )
+    assert isinstance(
+        request.find_service(IJWTVerifier, name="upload", context=None),
+        DisabledJWTVerifier,
+    )
     assert isinstance(request.find_service(IJWTIssuer, context=None), DisabledJWTIssuer)
 
     task_name = app_config.task(delete_expired_jwts).name
