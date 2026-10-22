@@ -615,8 +615,8 @@ def burn_oidc_issued_token(request: Request):
 
 
 def _burn_jwt(token: str, request: Request):
-    # Burn is not an API_KEY-authenticated route. Bind verification explicitly to
-    # upload; never derive the expected audience from the submitted credential.
+    # Use the upload verifier for the token in the body, independently of the
+    # route's authentication settings.
     verifier = request.find_service(IJWTVerifier, name="upload", context=None)
     verified = verifier.verify(token)
     if verified is None or verified.subject.kind != SubjectKind.PUBLISHER:

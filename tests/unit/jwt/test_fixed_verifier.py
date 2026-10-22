@@ -26,7 +26,7 @@ class TestWarehouseJWTVerifierFactory:
         request = testing.DummyRequest()
         request.matched_route = types.SimpleNamespace(
             predicates=[
-                AuthMethodsPredicate({"api-key"}, None),
+                AuthMethodsPredicate({"jwt"}, None),
                 JWTAudiencePredicate("api", None),
             ]
         )
