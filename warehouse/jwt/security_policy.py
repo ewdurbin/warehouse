@@ -54,7 +54,7 @@ class JWTSecurityPolicy:
             return None
 
         allowed = auth_methods_for_route(request.matched_route)
-        if allowed is None or AuthenticationMethod.API_KEY not in allowed:
+        if allowed is None or AuthenticationMethod.JWT not in allowed:
             return None
 
         token = _extract_http_jwt(request)
@@ -92,7 +92,7 @@ class JWTSecurityPolicy:
         else:
             return None
 
-        request.authentication_method = AuthenticationMethod.API_KEY
+        request.authentication_method = AuthenticationMethod.JWT
         return identity
 
     def authenticated_userid(self, request):
@@ -110,7 +110,7 @@ class JWTSecurityPolicy:
         assert isinstance(token, str), "no JWT credential"
 
         if not permission_allowed_by_authentication_method(
-            permission, AuthenticationMethod.API_KEY
+            permission, AuthenticationMethod.JWT
         ):
             return WarehouseDenied(
                 f"API keys are not valid for permission: {permission}!",

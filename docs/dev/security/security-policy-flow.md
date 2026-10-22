@@ -476,7 +476,7 @@ sequenceDiagram
 | `MultiSecurityPolicy` | Tries policies in order, caches `(identity, policy)`, delegates `permits` |
 | `UserContext` | A `User` plus an optional `Macaroon`; `macaroon=None` means session auth |
 | `PublisherTokenContext` | An OIDC publisher plus signed claims (Trusted Publishing) |
-| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `API_KEY` (placeholder) |
+| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `JWT`, `API_KEY` (placeholder) |
 | `AuthMethodsPredicate` | Storage-only route tag listing which methods may authenticate the route |
 | `PERMISSION_AUTH_METHODS` | Which auth methods may grant which permissions (default: session-only) |
 | `WarehouseDenied` | A `Denied` subclass carrying a human message and a machine `reason` |
@@ -540,8 +540,10 @@ Permission-wide grants do not bypass project context requirements or live ACLs.
 Unsupported identity kinds, permissions, and contexts are rejected.
 
 `JWTSecurityPolicy` follows the existing policies and only considers Bearer
-credentials on explicitly opted-in API_KEY routes. Authentication checks the
-signature and registry, then resolves the typed user or publisher. Authorization
+credentials on explicitly opted-in JWT routes. `API_KEY` remains a distinct,
+unimplemented placeholder and does not enable JWT authentication or grant any
+permissions. Authentication checks the signature and registry, then resolves the
+typed user or publisher. Authorization
 reverifies the original credential and rechecks liveness, identity binding,
 permission/resource restrictions, and live ACLs. Cached identity does not bypass
 these checks. Basic/Token JWT transport is not supported. The registered verifier
