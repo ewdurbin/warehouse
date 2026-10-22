@@ -158,7 +158,7 @@ class TestWarehouseJWTIssuerFactory:
         new = jwt_issuer_factory(settings)(None, request).issue(**issue_args)
         request.matched_route = types.SimpleNamespace(
             predicates=[
-                AuthMethodsPredicate({"api-key"}, None),
+                AuthMethodsPredicate({"jwt"}, None),
                 JWTAudiencePredicate("upload", None),
             ]
         )
@@ -349,7 +349,7 @@ class TestWarehouseJWTIssuer:
         assert entry.additional == {"oidc": {"sha": "abc"}}
         assert jwt.get_unverified_header(issued.token) == {
             "alg": "RS256",
-            "typ": "warehouse-api-key+jwt",
+            "typ": "pypi-access+jwt",
             "kid": "current",
         }
         claims = jwt.decode(
@@ -545,7 +545,7 @@ class TestWarehouseJWTIssuer:
             request.db = db_session
             apply_request_extensions(request)
             request.matched_route = types.SimpleNamespace(
-                predicates=[AuthMethodsPredicate({"api-key"}, None)]
+                predicates=[AuthMethodsPredicate({"jwt"}, None)]
             )
             request.headers["Authorization"] = f"Bearer {issued.token}"
             assert request.identity.publisher is publisher
