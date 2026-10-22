@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.common.db.packaging import ProjectFactory
 from warehouse.accounts.utils import UserContext
 from warehouse.authnz import Permissions
 from warehouse.jwt.authorization import permits
@@ -19,7 +20,6 @@ from warehouse.jwt.claims import (
     SubjectRef,
 )
 from warehouse.oidc.utils import PublisherTokenContext
-from warehouse.packaging.models import Project
 
 
 @pytest.fixture
@@ -28,8 +28,8 @@ def identity(verified):
 
 
 @pytest.fixture
-def project(verified, mocker):
-    return mocker.Mock(spec=Project, id=verified.authorization_details[0].resource.id)
+def project(verified):
+    return ProjectFactory.build(id=verified.authorization_details[0].resource.id)
 
 
 @pytest.mark.parametrize(
@@ -116,8 +116,8 @@ def test_unknown_subject_kind(verified, identity):
     assert not permits(verified, identity, None, Permissions.APIEcho)
 
 
-def test_details_do_not_form_a_cross_product(verified, identity, project, mocker):
-    other = mocker.Mock(spec=Project, id=uuid4())
+def test_details_do_not_form_a_cross_product(verified, identity, project):
+    other = ProjectFactory.build()
     verified = replace(
         verified,
         authorization_details=(
@@ -232,8 +232,8 @@ class TestPermissionWideAuthorization:
         )
         assert permits(token, identity, project, Permissions.APIObservationsAdd)
 
-    def test_does_not_widen_other_operations(self, verified, identity, project, mocker):
-        other = mocker.Mock(spec=Project, id=uuid4())
+    def test_does_not_widen_other_operations(self, verified, identity, project):
+        other = ProjectFactory.build()
         token = replace(
             verified,
             authorization_details=(
