@@ -210,8 +210,8 @@ The danger-API routes pass `auth_methods={"macaroon", "jwt"}` instead.
 `JWTSecurityPolicy` implements `jwt`, but its default `DisabledJWTVerifier`
 rejects every token. `API_KEY` remains a distinct, unimplemented placeholder:
 it neither enables JWT authentication nor grants permissions. JWT authentication
-remains disabled unless explicitly configured. The Trusted Publisher upload trial supports opt-in issuance,
-Bearer uploads, and self-revocation; see the
+remains disabled unless explicitly configured. The Trusted Publisher upload trial
+supports opt-in issuance, Bearer uploads, and self-revocation; see the
 [trial guide](../development/trusted-publisher-jwt-trial.md).
 Listing `basic-auth` without `macaroon` raises a `ConfigurationError`, since
 the only credential basic-auth lets through is a macaroon.
@@ -391,6 +391,8 @@ Warehouse-issued token profile, but requires explicit configuration to enable:
   `RS256`, the type must be `pypi-access+jwt`, and the key ID must identify
   a trusted RSA public key supplied to the verifier. Keys must be at least
   2048 bits. Tokens cannot supply keys, key URLs, or JOSE extensions.
+  The type identifies PyPI access tokens, not a particular environment or
+  endpoint; issuer and audience checks provide that separation.
 - `iss` and `aud` must exactly match the issuer and single audience supplied
   to the verifier. Audience arrays are rejected. `sub` is a canonical Warehouse
   UUID and the required `subject_kind` is either `user` or `publisher`.
