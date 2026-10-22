@@ -169,14 +169,11 @@ def jwt_enabled():
 
 @pytest.fixture
 def make_request(
-    jwt_settings, jwt_enabled, user, mocker, clock, registered_jti, db_session
+    jwt_settings, jwt_enabled, user_service, mocker, clock, registered_jti, db_session
 ):
     jwt_settings.pop("warehouse.jwt.enabled")
     if jwt_enabled is not None:
         jwt_settings["warehouse.jwt.enabled"] = jwt_enabled
-    user_service = mocker.Mock(spec=["get_user", "is_disabled"])
-    user_service.get_user.return_value = user
-    user_service.is_disabled.return_value = (False, None)
     jwt_settings.update(
         {
             "docs.url": "https://docs.example",
