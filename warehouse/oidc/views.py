@@ -551,7 +551,7 @@ def burn_oidc_issued_token(request: Request):
 
 
 def _burn_jwt(token: str, request: Request):
-    # Burn is not an API_KEY-authenticated route. Bind verification explicitly to
+    # Burn is not a JWT-authenticated route. Bind verification explicitly to
     # upload; never derive the expected audience from the submitted credential.
     verifier = request.find_service(IJWTVerifier, name="upload", context=None)
     verified = verifier.verify(token)
