@@ -135,15 +135,13 @@ class TestJWTAudienceForRoute:
     def test_returns_predicate_val(self, audience_name):
         route = types.SimpleNamespace(
             predicates=[
-                AuthMethodsPredicate({"api-key"}, None),
+                AuthMethodsPredicate({"jwt"}, None),
                 JWTAudiencePredicate(audience_name, None),
             ]
         )
         assert jwt_audience_for_route(route) == audience_name
 
-    @pytest.mark.parametrize(
-        "predicates", [[], [AuthMethodsPredicate({"api-key"}, None)]]
-    )
+    @pytest.mark.parametrize("predicates", [[], [AuthMethodsPredicate({"jwt"}, None)]])
     def test_returns_none_when_undeclared(self, predicates):
         route = types.SimpleNamespace(predicates=predicates)
         assert jwt_audience_for_route(route) is None

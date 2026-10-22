@@ -550,10 +550,10 @@ Trusted configuration can opt into verification with `warehouse.jwt.enabled`,
 an exact issuer, distinct upload/API audiences, and a key-ID-to-public-PEM
 mapping. Route `jwt_audience` metadata selects the named audience; headers,
 hostnames, paths, and unverified claims cannot choose it. Both the audience
-declaration and explicit API_KEY route opt-in are required. Missing opt-in keeps
+declaration and explicit JWT route opt-in are required. Missing opt-in keeps
 the rejecting verifier, and enabling incomplete configuration fails startup.
 
-The upload route opts into API_KEY with the upload audience. The existing echo
-and observation API routes opt into API_KEY with the separate API audience;
+The upload route opts into JWT with the upload audience. The existing echo
+and observation API routes opt into JWT with the separate API audience;
 observation authorization still requires observer privileges. Acceptance remains
 disabled by default, and this layer exposes no JWT issuance endpoint.

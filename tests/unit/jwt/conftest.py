@@ -199,7 +199,7 @@ def make_request(
             config.add_route(
                 f"new-endpoint.{audience_name}",
                 f"/audience-test/{audience_name}",
-                auth_methods={"api-key"},
+                auth_methods={"jwt"},
                 jwt_audience=audience_name,
             )
         config.add_directive("add_periodic_task", mocker.Mock())

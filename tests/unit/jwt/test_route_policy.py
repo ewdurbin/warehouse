@@ -83,7 +83,7 @@ class TestAudienceJWTService:
         )
         assert bool(request.has_permission(permission, project)) == accepted
         if accepted:
-            assert request.authentication_method == AuthenticationMethod.API_KEY
+            assert request.authentication_method == AuthenticationMethod.JWT
 
     @pytest.mark.parametrize("jwt_enabled", [None, False, "false"])
     def test_disabled_by_default(self, make_request, sign):
@@ -192,13 +192,13 @@ class TestRegisteredJWTPolicy:
         verify = mocker.spy(verifier, "verify")
 
         assert request.identity is not None
-        assert request.authentication_method == AuthenticationMethod.API_KEY
+        assert request.authentication_method == AuthenticationMethod.JWT
         assert request.has_permission(Permissions.ProjectsUpload, project)
         assert not request.has_permission(Permissions.ProjectsUpload, ProjectFactory())
         assert not request.has_permission(Permissions.APIObservationsAdd, project)
         assert not request.has_permission(Permissions.AccountManage, project)
         assert request.has_permission(Permissions.ProjectsUpload, project)
-        # Authentication plus four API_KEY permission checks; AccountManage is
+        # Authentication plus four JWT permission checks; AccountManage is
         # denied by the method allowlist without needing credential validation.
         entry_check.assert_called_once_with(registered_jti)
         assert active_check.call_args_list == [mocker.call(registered_jti)] * 4
@@ -369,7 +369,7 @@ class TestSignedObservationJWTPolicy:
             )
             assert request.matched_route.name == "api.projects.observations"
             assert request.identity == UserContext(user, macaroon=None)
-            assert request.authentication_method == AuthenticationMethod.API_KEY
+            assert request.authentication_method == AuthenticationMethod.JWT
             assert request.has_permission(Permissions.APIObservationsAdd, project)
 
     @pytest.mark.parametrize("narrowed", [False, True])
