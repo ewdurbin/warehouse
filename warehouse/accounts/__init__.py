@@ -38,6 +38,7 @@ from warehouse.accounts.tasks import (
     unverify_emails_with_expired_domains,
 )
 from warehouse.accounts.utils import UserContext
+from warehouse.jwt import security_policy as jwt_security_policy
 from warehouse.macaroons.security_policy import MacaroonSecurityPolicy
 from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.utils.security_policy import MultiSecurityPolicy
@@ -170,6 +171,7 @@ def includeme(config):
                 SessionSecurityPolicy(),
                 BasicAuthSecurityPolicy(),
                 MacaroonSecurityPolicy(),
+                jwt_security_policy.JWTSecurityPolicy(),
             ],
         )
     )
