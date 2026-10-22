@@ -8,11 +8,20 @@ from uuid import UUID
 import jwt
 import pytest
 
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from freezegun import freeze_time
 from pyramid.authorization import Authenticated
 
-from tests.common.jwt import API_AUDIENCE, ISSUER, JTI, NOW, PROJECT_ID, USER_ID
+from tests.common.jwt import (
+    API_AUDIENCE,
+    ISSUER,
+    JTI,
+    NOW,
+    PROJECT_ID,
+    UPLOAD_AUDIENCE,
+    USER_ID,
+)
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
     AuthorizationDetail,
@@ -141,3 +150,22 @@ def user():
 @pytest.fixture
 def project(mocker):
     return mocker.Mock(spec=Project, id=UUID(PROJECT_ID))
+
+
+@pytest.fixture
+def jwt_settings(signing_keys):
+    return {
+        "warehouse.jwt.enabled": True,
+        "warehouse.jwt.issuer": ISSUER,
+        "warehouse.jwt.upload_audience": UPLOAD_AUDIENCE,
+        "warehouse.jwt.api_audience": API_AUDIENCE,
+        "warehouse.jwt.verification_keys": {
+            kid: key.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+            for kid, key in zip(("current", "previous"), signing_keys, strict=True)
+        },
+    }
