@@ -15,7 +15,7 @@ from warehouse.jwt.models import IssuedJWT
 from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
 
 
-def jwt_verifier_factory(settings):
+def jwt_verifier_factory(settings, *, audience=None):
     """Select the JWT verifier factory from trusted settings."""
     if not asbool(settings.get("warehouse.jwt.enabled", False)):
         return DisabledJWTVerifier.create_service
@@ -23,7 +23,8 @@ def jwt_verifier_factory(settings):
     # The verifier factory also imports DisabledJWTVerifier from this module.
     from warehouse.jwt.verifier import WarehouseJWTVerifierFactory  # noqa: PLC0415
 
-    return WarehouseJWTVerifierFactory(settings)
+    factory = WarehouseJWTVerifierFactory(settings)
+    return factory if audience is None else factory.for_audience(audience)
 
 
 def jwt_issuer_factory(settings):

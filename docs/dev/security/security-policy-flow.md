@@ -561,3 +561,9 @@ the profile, registers the ID and server-only metadata in the caller's transacti
 and signs with the configured key. The caller must commit the transaction. Signing
 is opt-in: verification-only deployments need no private key, and the default
 issuer rejects issuance.
+
+The existing Trusted Publishing burn endpoint also accepts publisher JWTs. A named
+upload verifier fixes the expected audience independently of route metadata.
+Only a valid publisher credential can revoke its own active registry entry, even
+if the publisher has since been deleted. The endpoint keeps its non-enumerating
+202 response, its existing macaroon behavior, and request-owned transactions.

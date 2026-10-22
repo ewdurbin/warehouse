@@ -16,6 +16,11 @@ def includeme(config):
     config.register_service_factory(
         jwt_verifier_factory(config.registry.settings), IJWTVerifier
     )
+    config.register_service_factory(
+        jwt_verifier_factory(config.registry.settings, audience="upload"),
+        IJWTVerifier,
+        name="upload",
+    )
     config.register_service_factory(DatabaseJWTRegistry.create_service, IJWTRegistry)
     config.register_service_factory(
         jwt_issuer_factory(config.registry.settings), IJWTIssuer
