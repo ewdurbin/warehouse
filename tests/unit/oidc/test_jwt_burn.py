@@ -23,28 +23,16 @@ from warehouse.jwt.claims import (
     SubjectKind,
     SubjectRef,
 )
-from warehouse.jwt.interfaces import IJWTSigner, IJWTVerifier
+from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.issuer import WarehouseJWTIssuer
 from warehouse.jwt.models import IssuedJWT
 from warehouse.jwt.services import (
     DatabaseJWTRegistry,
-    WarehouseJWTVerifierFactory,
     jwt_issuer_factory,
 )
 from warehouse.oidc import views
 from warehouse.oidc.models import GitHubPublisher
 from warehouse.packaging.models import Project
-
-
-@pytest.fixture
-def issuer(db_request, pyramid_services, warehouse_jwt_settings, warehouse_jwt_signer):
-    pyramid_services.register_service(warehouse_jwt_signer, IJWTSigner, None)
-    return jwt_issuer_factory(warehouse_jwt_settings)(None, db_request)
-
-
-@pytest.fixture
-def publisher(db_session):
-    return GitHubPublisherFactory()
 
 
 def issue_upload_jwt(
@@ -63,15 +51,14 @@ def issue_upload_jwt(
 
 class TestBurnJWT:
     @pytest.fixture(autouse=True)
-    def setup_verifier(self, pyramid_services, warehouse_jwt_settings):
-        verifier = WarehouseJWTVerifierFactory(warehouse_jwt_settings).for_audience(
-            "upload"
+    def setup_verifier(self, pyramid_services, jwt_upload_verifier):
+        pyramid_services.register_service(
+            jwt_upload_verifier, IJWTVerifier, None, name="upload"
         )
-        pyramid_services.register_service(verifier, IJWTVerifier, None, name="upload")
 
     @pytest.fixture
-    def issued(self, publisher, issuer):
-        return issue_upload_jwt(issuer, publisher)
+    def issued(self, jwt_publisher, jwt_issuer):
+        return issue_upload_jwt(jwt_issuer, jwt_publisher)
 
     def burn(self, request, issued):
         request.body = json.dumps({"token": issued.token})
@@ -80,10 +67,10 @@ class TestBurnJWT:
         assert response == {"message": "Accepted", "errors": []}
 
     def test_burns_only_presented_token_and_is_idempotent(
-        self, db_request, issued, issuer, publisher, jwt_registry, metrics
+        self, db_request, issued, jwt_issuer, jwt_publisher, jwt_registry, metrics
     ):
-        project = ProjectFactory(oidc_publishers=[publisher])
-        other = issue_upload_jwt(issuer, publisher)
+        project = ProjectFactory(oidc_publishers=[jwt_publisher])
+        other = issue_upload_jwt(jwt_issuer, jwt_publisher)
 
         self.burn(db_request, issued)
         self.burn(db_request, issued)
@@ -109,16 +96,18 @@ class TestBurnJWT:
         ],
     )
     def test_rejects_tokens_outside_the_burn_policy(
-        self, db_request, issuer, publisher, jwt_registry, kind, audience
+        self, db_request, jwt_issuer, jwt_publisher, jwt_registry, kind, audience
     ):
-        issued = issue_upload_jwt(issuer, publisher, kind=kind, audience=audience)
+        issued = issue_upload_jwt(
+            jwt_issuer, jwt_publisher, kind=kind, audience=audience
+        )
         self.burn(db_request, issued)
         assert jwt_registry.is_active(issued.jti)
 
     def test_deleted_publisher_can_still_revoke(
-        self, db_request, issued, jwt_registry, publisher
+        self, db_request, issued, jwt_registry, jwt_publisher
     ):
-        db_request.db.delete(publisher)
+        db_request.db.delete(jwt_publisher)
         db_request.db.flush()
 
         self.burn(db_request, issued)

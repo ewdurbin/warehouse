@@ -57,8 +57,20 @@ def upstream_key():
 
 @pytest.fixture
 def webtest(
-    database, tm, warehouse_jwt_settings, upstream_key, mockredis, mocker, tmp_path
+    database,
+    tm,
+    warehouse_jwt_settings,
+    warehouse_jwt_signer,
+    upstream_key,
+    mockredis,
+    mocker,
+    tmp_path,
 ):
+    # Sign with the test RSA key in place of KMS.
+    mocker.patch(
+        "warehouse.jwt.KMSJWTSignerService.from_settings",
+        return_value=warehouse_jwt_signer,
+    )
     # Verify assertions with a local provider key and track replay in memory.
     mocker.patch.object(
         OIDCPublisherService, "_get_key", return_value=upstream_key.public_key()
