@@ -11,7 +11,6 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy.exc import OperationalError
 
-from tests.common.db.oidc import GitHubPublisherFactory
 from tests.common.db.packaging import ProjectFactory
 from warehouse.authnz import Permissions
 from warehouse.events.tags import EventTag
@@ -21,43 +20,11 @@ from warehouse.jwt.claims import (
     SubjectKind,
     SubjectRef,
 )
-from warehouse.jwt.interfaces import IJWTIssuer, IJWTVerifier
+from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
-from warehouse.jwt.services import (
-    DisabledJWTVerifier,
-    jwt_issuer_factory,
-    jwt_verifier_factory,
-)
-from warehouse.jwt.verifier import WarehouseJWTVerifier
+from warehouse.jwt.services import DisabledJWTVerifier
 from warehouse.oidc import views
 from warehouse.packaging.models import Project
-
-
-@pytest.fixture
-def issuer(db_request, pyramid_services, warehouse_jwt_settings):
-    service = jwt_issuer_factory(warehouse_jwt_settings)(None, db_request)
-    pyramid_services.register_service(service, IJWTIssuer, None)
-    return service
-
-
-@pytest.fixture
-def verifier(warehouse_jwt_key, warehouse_jwt_settings):
-    return WarehouseJWTVerifier(
-        issuer=warehouse_jwt_settings["warehouse.jwt.issuer"],
-        audience=warehouse_jwt_settings["warehouse.jwt.upload_audience"],
-        keys={"current": warehouse_jwt_key.public_key()},
-    )
-
-
-@pytest.fixture
-def publisher(db_session):
-    return GitHubPublisherFactory(
-        repository_name="bar",
-        repository_owner="foo",
-        repository_owner_id="123",
-        workflow_filename="example.yml",
-        environment="fake",
-    )
 
 
 def issue_upload_jwt(issuer, publisher):
@@ -75,17 +42,16 @@ def issue_upload_jwt(issuer, publisher):
 
 class TestBurnJWT:
     @pytest.fixture(autouse=True)
-    def setup_verifier(self, db_request, pyramid_services, warehouse_jwt_settings):
-        verifier = jwt_verifier_factory(warehouse_jwt_settings).for_audience("upload")(
-            None, db_request
+    def setup_verifier(self, pyramid_services, jwt_upload_verifier):
+        pyramid_services.register_service(
+            jwt_upload_verifier, IJWTVerifier, None, name="upload"
         )
-        pyramid_services.register_service(verifier, IJWTVerifier, None, name="upload")
 
     @pytest.fixture
-    def issued(self, db_request, publisher, issuer, verifier):
-        ProjectFactory(oidc_publishers=[publisher])
-        token = issue_upload_jwt(issuer, publisher)
-        return token, verifier.verify(token)
+    def issued(self, db_request, jwt_publisher, jwt_issuer, jwt_upload_verifier):
+        ProjectFactory(oidc_publishers=[jwt_publisher])
+        token = issue_upload_jwt(jwt_issuer, jwt_publisher)
+        return token, jwt_upload_verifier.verify(token)
 
     def burn(self, request, token):
         request.body = json.dumps({"token": token})
@@ -94,15 +60,15 @@ class TestBurnJWT:
         assert response == {"message": "Accepted", "errors": []}
 
     def test_burns_only_presented_token_and_is_idempotent(
-        self, db_request, issued, issuer, publisher, verifier
+        self, db_request, issued, jwt_issuer, jwt_publisher, jwt_upload_verifier
     ):
         token, verified = issued
-        other = issue_upload_jwt(issuer, publisher)
+        other = issue_upload_jwt(jwt_issuer, jwt_publisher)
         self.burn(db_request, token)
         self.burn(db_request, token)
-        assert not issuer.registry.is_active(verified.jti)
-        assert issuer.registry.is_active(verifier.verify(other).jti)
-        for project in publisher.projects:
+        assert not jwt_issuer.registry.is_active(verified.jti)
+        assert jwt_issuer.registry.is_active(jwt_upload_verifier.verify(other).jti)
+        for project in jwt_publisher.projects:
             events = project.events.where(
                 Project.Event.tag == EventTag.Project.ShortLivedAPITokenRevoked
             ).all()
@@ -113,7 +79,7 @@ class TestBurnJWT:
         ["audience", "issuer", "subject", "expiry", "jti", "signature", "malformed"],
     )
     def test_rejects_invalid_tokens(
-        self, db_request, issued, issuer, warehouse_jwt_key, change, mocker
+        self, db_request, issued, jwt_issuer, warehouse_jwt_key, change, mocker
     ):
         token, verified = issued
         claims = jwt.decode(token, options={"verify_signature": False})
@@ -136,52 +102,54 @@ class TestBurnJWT:
         )
         if change == "malformed":
             candidate = "invalid.jwt.token"
-        revoke = mocker.spy(issuer.registry, "revoke")
+        revoke = mocker.spy(jwt_issuer.registry, "revoke")
         self.burn(db_request, candidate)
         revoke.assert_not_called()
-        assert issuer.registry.is_active(verified.jti)
+        assert jwt_issuer.registry.is_active(verified.jti)
 
     def test_disabled_verifier_cannot_burn(
-        self, db_request, issued, issuer, pyramid_services
+        self, db_request, issued, jwt_issuer, pyramid_services
     ):
         token, verified = issued
         pyramid_services.register_service(
             DisabledJWTVerifier(), IJWTVerifier, None, name="upload"
         )
         self.burn(db_request, token)
-        assert issuer.registry.is_active(verified.jti)
+        assert jwt_issuer.registry.is_active(verified.jti)
 
-    def test_expired_registry_entry_is_noop(self, db_request, issued, issuer, mocker):
+    def test_expired_registry_entry_is_noop(
+        self, db_request, issued, jwt_issuer, mocker
+    ):
         token, verified = issued
         db_request.db.get(IssuedJWT, verified.jti).expires_at = datetime.now(UTC)
-        revoke = mocker.spy(issuer.registry, "revoke")
+        revoke = mocker.spy(jwt_issuer.registry, "revoke")
         self.burn(db_request, token)
         revoke.assert_not_called()
 
     def test_deleted_publisher_can_still_revoke(
-        self, db_request, issued, issuer, publisher
+        self, db_request, issued, jwt_issuer, jwt_publisher
     ):
         token, verified = issued
-        db_request.db.delete(publisher)
+        db_request.db.delete(jwt_publisher)
         db_request.db.flush()
         self.burn(db_request, token)
-        assert not issuer.registry.is_active(verified.jti)
+        assert not jwt_issuer.registry.is_active(verified.jti)
 
-    def test_caller_owns_transaction(self, db_request, issued, issuer):
+    def test_caller_owns_transaction(self, db_request, issued, jwt_issuer):
         token, verified = issued
         with db_request.db.begin_nested() as transaction:
             self.burn(db_request, token)
-            assert not issuer.registry.is_active(verified.jti)
+            assert not jwt_issuer.registry.is_active(verified.jti)
             transaction.rollback()
-        assert issuer.registry.is_active(verified.jti)
+        assert jwt_issuer.registry.is_active(verified.jti)
 
     @pytest.mark.parametrize("method", ["is_active", "revoke"])
     def test_database_failures_propagate(
-        self, db_request, issued, issuer, mocker, method
+        self, db_request, issued, jwt_issuer, mocker, method
     ):
         token, _ = issued
         mocker.patch.object(
-            issuer.registry,
+            jwt_issuer.registry,
             method,
             side_effect=OperationalError(
                 "statement", {}, Exception("database unavailable")
