@@ -42,8 +42,7 @@ _REQUIRED_CLAIMS = {
 class WarehouseJWTVerifierFactory:
     """Load verifier settings once and select the audience from the matched route.
 
-    Neither token claims nor request host/path/headers determine the audience.
-    Routes must explicitly declare a jwt_audience and opt into API_KEY.
+    Routes must declare jwt_audience and include jwt in auth_methods.
     """
 
     def __init__(self, settings):
@@ -93,7 +92,7 @@ class WarehouseJWTVerifierFactory:
             if (
                 audience_name is not None
                 and methods is not None
-                and AuthenticationMethod.API_KEY in methods
+                and AuthenticationMethod.JWT in methods
             ):
                 return self._verifiers[audience_name]
         return DisabledJWTVerifier()
