@@ -32,7 +32,8 @@ def permits(verified: VerifiedJWT, identity, context, permission) -> bool:
         ) != str(verified.subject.id):
             return False
     else:
-        return False
+        # Reject unknown subject kinds if a caller bypasses profile validation.
+        return False  # type: ignore[unreachable]
 
     if not isinstance(permission, Permissions):
         return False
