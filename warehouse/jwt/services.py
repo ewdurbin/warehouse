@@ -30,7 +30,11 @@ def jwt_issuer_factory(settings):
     """Keep signing opt-in; verification-only deployments need no private key."""
     if not asbool(settings.get("warehouse.jwt.enabled", False)) or not any(
         name in settings
-        for name in ("warehouse.jwt.signing_key", "warehouse.jwt.signing_key_id")
+        for name in (
+            "warehouse.jwt.signing_key",
+            "warehouse.jwt.signing_key_id",
+            "warehouse.jwt.kms_key_id",
+        )
     ):
         return DisabledJWTIssuer.create_service
 

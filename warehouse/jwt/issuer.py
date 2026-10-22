@@ -8,6 +8,7 @@ from uuid import UUID
 
 import jwt
 
+from botocore.exceptions import BotoCoreError, ClientError
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -25,6 +26,7 @@ from warehouse.jwt.claims import (
     SubjectRef,
 )
 from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry
+from warehouse.jwt.kms import KMSRSAPrivateKey
 from warehouse.jwt.profile import (
     MAX_LIFETIME_SECONDS,
     MEDIA_TYPE,
@@ -65,22 +67,34 @@ class WarehouseJWTIssuerFactory:
 
     @classmethod
     def from_settings(cls, settings):
+        has_pem = "warehouse.jwt.signing_key" in settings
+        has_kms = "warehouse.jwt.kms_key_id" in settings
+        if has_pem == has_kms:
+            raise ConfigurationError("JWT signing requires exactly one signing key")
         key_id = settings.get("warehouse.jwt.signing_key_id")
-        pem = settings.get("warehouse.jwt.signing_key")
+        key_reference = settings[
+            "warehouse.jwt.signing_key" if has_pem else "warehouse.jwt.kms_key_id"
+        ]
         public_keys = settings.get("warehouse.jwt.verification_keys")
         if (
             not isinstance(key_id, str)
             or not key_id
-            or not isinstance(pem, str)
+            or not isinstance(key_reference, str)
+            or not key_reference
             or not isinstance(public_keys, Mapping)
             or not isinstance(public_keys.get(key_id), str)
         ):
             raise ConfigurationError(
-                "JWT signing requires a PEM private key and a key ID "
-                "in verification_keys"
+                "JWT signing requires a signing key and a key ID in verification_keys"
             )
         try:
-            key = load_pem_private_key(pem.encode("utf-8"), password=None)
+            key = (
+                load_pem_private_key(key_reference.encode("utf-8"), password=None)
+                if has_pem
+                else KMSRSAPrivateKey.load(
+                    key_reference, region_name=settings.get("aws.region")
+                )
+            )
             factory = cls(
                 issuer=settings.get("warehouse.jwt.issuer"),
                 audiences={
@@ -95,7 +109,13 @@ class WarehouseJWTIssuerFactory:
                 raise ValueError(
                     "JWT signing key must match its configured verification key"
                 )
-        except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
+        except (
+            BotoCoreError,
+            ClientError,
+            ValueError,
+            TypeError,
+            UnsupportedAlgorithm,
+        ) as exc:
             # Do not include configuration values, especially the private key.
             raise ConfigurationError("Invalid JWT signing configuration") from exc
         return factory

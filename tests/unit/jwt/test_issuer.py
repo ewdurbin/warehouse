@@ -67,15 +67,6 @@ def issuer(signing_config, jwt_registry):
     return WarehouseJWTIssuer(registry=jwt_registry, config=signing_config)
 
 
-@pytest.fixture
-def issue_args(verified):
-    return {
-        "subject": verified.subject,
-        "audience": "upload",
-        "authorization_details": verified.authorization_details,
-    }
-
-
 class TestDisabledJWTIssuer:
     def test_interface(self):
         assert verifyClass(IJWTIssuer, DisabledJWTIssuer)

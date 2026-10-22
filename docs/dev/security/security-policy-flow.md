@@ -549,7 +549,8 @@ settings are supplied. The configuration surface for explicitly opting in is:
 | `warehouse.jwt.api_audience` | `JWT_API_AUDIENCE` | Exact API audience, distinct from upload |
 | `warehouse.jwt.verification_keys` | `JWT_VERIFICATION_KEYS` | Mapping of key IDs to PEM RSA public-key strings; JSON in the environment variable |
 | `warehouse.jwt.signing_key_id` | `JWT_SIGNING_KEY_ID` | Optional active signing key ID; must exist in the verification key mapping |
-| `warehouse.jwt.signing_key` | `JWT_SIGNING_KEY` | Optional PEM RSA private key (unencrypted, at least 2048 bits); must match the public key for the signing key ID |
+| `warehouse.jwt.kms_key_id` | `JWT_KMS_KEY_ID` | AWS KMS key ID, ARN, or alias for an RSA `SIGN_VERIFY` key; use instead of `JWT_SIGNING_KEY` |
+| `warehouse.jwt.signing_key` | `JWT_SIGNING_KEY` | PEM RSA private key (unencrypted, at least 2048 bits); use instead of `JWT_KMS_KEY_ID` |
 
 When enabled, startup validates the configuration and loads the public keys.
 Missing/invalid settings, shared upload/API audiences, private keys,
@@ -582,9 +583,39 @@ resource authorization checks.
 `IJWTIssuer` is a server-side signing service, not an exchange endpoint. It is
 disabled by default. Enabling verification alone does not require a private key:
 `DisabledJWTIssuer` remains registered unless `warehouse.jwt.enabled` is true and
-signing configuration is supplied. Supplying only one signing setting or an
-invalid/mismatched key fails application configuration. Private keys are loaded
-once from trusted secret configuration and must not be logged or exposed.
+signing configuration is supplied. Issuance requires a signing key ID and exactly
+one signing backend. The public key in the verification mapping must match the
+signing key. Incomplete, ambiguous, invalid, or mismatched settings fail application
+configuration.
+
+For KMS, provision an RSA key with usage `SIGN_VERIFY` and grant the issuing
+workload `kms:GetPublicKey` and `kms:Sign` on that key. It uses the AWS SDK
+credential chain and the configured AWS region. At startup, Warehouse fetches the
+public key, checks that it matches the verification key configured for the JWT
+`kid`, and resolves the KMS key reference to an immutable key ARN. Each issuance
+calls KMS once to sign a SHA-256 digest with `RSASSA_PKCS1_V1_5_SHA_256`. The
+private key never enters Warehouse, and upload verification never calls KMS. KMS
+failures prevent issuance; there is no fallback to local signing or macaroons. A
+local PEM key is also supported for development and tests and must never be logged
+or exposed.
+
+Rotate signing keys with overlapping verification keys:
+
+1. Create a new RSA `SIGN_VERIFY` key. Grant the issuing workload access and fetch
+   its public key.
+2. Add the public key under a **new** JWT `kid` in `JWT_VERIFICATION_KEYS` on every
+   verifier, and reload their application configuration. Keep the old entry.
+3. Update `JWT_KMS_KEY_ID` and `JWT_SIGNING_KEY_ID` on issuers and reload their
+   application configuration. Moving an alias alone does not rotate running
+   issuers; the ARN was pinned at startup.
+4. After the last old-key issuer has stopped, wait at least the maximum five-minute
+   token lifetime plus deployment and clock safety margins before removing the old
+   public key and signing permissions. Reload the verifiers. Removing an old public
+   key earlier invalidates otherwise-valid JWTs signed with it.
+
+For emergency retirement, remove the compromised key's public key from every
+verifier immediately. Disabling signing access in KMS alone does not invalidate
+already-issued tokens checked locally.
 
 An authorized server-side caller selects a typed `SubjectRef`, an audience name
 (`"upload"` or `"api"`, resolved through configuration), and typed authorization
@@ -597,8 +628,6 @@ integer-second timestamp. The returned immutable `SignedJWT` contains `token`,
 handing out the credential and roll back on failure. Issuance itself neither
 authenticates an upstream identity nor authorizes the requested grants.
 
-Signing key rotation selects a new key ID while retaining old public keys long
-enough to verify outstanding tokens.
 
 The OIDC exchange accepts an optional `token_format` of `"macaroon"` (the default)
 or `"jwt"`. Unknown formats fail payload validation. JWT opt-in requires an enabled
@@ -606,7 +635,9 @@ or `"jwt"`. Unknown formats fail payload validation. JWT opt-in requires an enab
 upstream replay-token consumption, without falling back to a macaroon. Provider
 verification, publisher matching, pending-publisher handling, replay protection,
 events, and notifications remain shared between formats. The real OIDC backend
-checks replay only when the upstream assertion includes a `jti`.
+checks replay only when the upstream assertion includes a `jti`. A KMS signing
+failure happens after any such identifier has been claimed; use a fresh assertion
+to retry.
 
 The JWT exchange chooses the publisher subject, upload audience, a permission-wide
 `projects:upload` authorization detail, and a five-minute lifetime on the server.

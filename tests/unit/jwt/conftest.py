@@ -71,6 +71,15 @@ def verified():
     )
 
 
+@pytest.fixture
+def issue_args(verified):
+    return {
+        "subject": verified.subject,
+        "audience": "upload",
+        "authorization_details": verified.authorization_details,
+    }
+
+
 @pytest.fixture(scope="module")
 def signing_keys():
     return [
