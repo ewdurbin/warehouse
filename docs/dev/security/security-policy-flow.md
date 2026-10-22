@@ -201,14 +201,17 @@ config.add_legacy_action_route(
     "forklift.legacy.file_upload",
     "file_upload",
     auth_methods={"basic-auth", "macaroon", "api-key"},
+    jwt_audience="upload",
     domain=forklift,
 )
 ```
 
 The danger-API routes pass `auth_methods={"macaroon", "api-key"}` instead.
 `JWTSecurityPolicy` implements `api-key`, but its default `DisabledJWTVerifier`
-rejects every token. JWT authentication remains disabled pending issuance,
-key configuration, and the remaining upload integration.
+rejects every token. JWT authentication remains disabled unless explicitly
+configured. The Trusted Publisher upload trial supports opt-in issuance,
+Bearer uploads, and self-revocation; see the
+[trial guide](../development/trusted-publisher-jwt-trial.md).
 Listing `basic-auth` without `macaroon` raises a `ConfigurationError`, since
 the only credential basic-auth lets through is a macaroon.
 
@@ -594,7 +597,7 @@ integer-second timestamp. The returned immutable `SignedJWT` contains `token`,
 handing out the credential and roll back on failure. Issuance itself neither
 authenticates an upstream identity nor authorizes the requested grants.
 
-For a future Trusted Publisher exchange, the caller can issue a publisher subject
+The Trusted Publisher exchange issues a publisher subject
 with the upload audience and an authorization detail containing
 `actions=[Permissions.ProjectsUpload]` and no resource restriction. Live publisher
 project associations still govern uploads, without enumerating projects in the
@@ -628,13 +631,14 @@ the same HTTP 202 response; database failures propagate and must not be reported
 as successful revocation. The caller's transaction commits deletion and events.
 
 The JWT policy enforces registry liveness at authentication and authorization;
-the cryptographic verifier remains independent of the database. Full upload-flow
-validation and deployment activation remain follow-up work. Before
-enabling JWT authentication in a deployment, complete those integrations and
-adapt the upload handler's macaroon-specific credential handling. User upload
-email and MFA requirements remain the upload handler's responsibility. The
-existing verifier still enforces the five-minute lifetime limit; the general
-registry does not define token-profile lifetime policy.
+the cryptographic verifier remains independent of the database. Functional tests
+cover the publisher exchange, upload, history/provenance, and burn flow. Publisher
+JWTs use the existing publisher upload path; the exchange does not issue user JWTs.
+User-backed upload issuance would need a separate integration pass over the upload
+handler's macaroon-specific behavior, email requirements, and MFA requirements.
+Deployment activation remains explicit and disabled by default. The verifier
+enforces the five-minute lifetime limit; the general registry does not define
+token-profile lifetime policy.
 
 ## 5. Authorization: how `permits` decides
 
