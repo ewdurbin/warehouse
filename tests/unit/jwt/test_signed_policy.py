@@ -74,7 +74,7 @@ class TestSignedJWTPolicy:
         )
         result = jwt_request.has_permission(Permissions.APIEcho, context)
         assert not result
-        assert result.reason == "invalid_api_key"
+        assert result.reason == "invalid_jwt"
 
     def test_overlong_token_does_not_authenticate(self, jwt_request, sign, claims):
         claims["exp"] = claims["iat"] + 301
@@ -388,7 +388,7 @@ class TestSignedPublisherJWTPolicy:
             Permissions.ProjectsUpload, publisher_project
         )
         assert not result
-        assert result.reason == "invalid_api_key"
+        assert result.reason == "invalid_jwt"
 
     @pytest.mark.parametrize("expected_audience", [API_AUDIENCE])
     def test_publisher_subject_is_not_upload_specific(self, jwt_request, publisher):
