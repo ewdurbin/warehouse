@@ -36,7 +36,7 @@ def test_includeme(forklift_domain, monkeypatch, mocker):
         mocker.call(
             "forklift.legacy.file_upload",
             "file_upload",
-            auth_methods={"basic-auth", "macaroon", "api-key"},
+            auth_methods={"basic-auth", "macaroon", "jwt"},
             jwt_audience="upload",
             domain=forklift_domain,
         ),

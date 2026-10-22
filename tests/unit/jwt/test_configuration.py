@@ -125,7 +125,7 @@ class TestWarehouseJWTVerifierFactory:
         request.matched_route = types.SimpleNamespace(
             name="api.echo",
             predicates=[
-                AuthMethodsPredicate({"api-key"}, None),
+                AuthMethodsPredicate({"jwt"}, None),
                 JWTAudiencePredicate("api", None),
             ],
         )
@@ -155,7 +155,7 @@ class TestWarehouseJWTVerifierFactory:
         request = testing.DummyRequest()
         request.matched_route = (
             types.SimpleNamespace(
-                name=route_name, predicates=[AuthMethodsPredicate({"api-key"}, None)]
+                name=route_name, predicates=[AuthMethodsPredicate({"jwt"}, None)]
             )
             if route_name is not None
             else None
@@ -164,8 +164,8 @@ class TestWarehouseJWTVerifierFactory:
         assert isinstance(verifier, DisabledJWTVerifier)
         assert verifier.verify(sign()) is None
 
-    @pytest.mark.parametrize("methods", [None, set(), {"macaroon"}])
-    def test_route_requires_api_key_opt_in(self, jwt_settings, methods):
+    @pytest.mark.parametrize("methods", [None, set(), {"macaroon"}, {"api-key"}])
+    def test_route_requires_jwt_opt_in(self, jwt_settings, methods):
         request = testing.DummyRequest()
         request.matched_route = types.SimpleNamespace(
             name="api.echo",

@@ -37,7 +37,7 @@ def includeme(config):
     config.add_legacy_action_route(
         "forklift.legacy.file_upload",
         "file_upload",
-        auth_methods={"basic-auth", "macaroon", "api-key"},
+        auth_methods={"basic-auth", "macaroon", "jwt"},
         jwt_audience="upload",
         domain=forklift,
     )
