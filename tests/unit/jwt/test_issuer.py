@@ -21,6 +21,7 @@ from zope.interface.verify import verifyClass
 
 from tests.common.db.oidc import GitHubPublisherFactory
 from tests.common.db.packaging import ProjectFactory
+from tests.common.jwt import API_AUDIENCE, ISSUER, UPLOAD_AUDIENCE
 from warehouse.accounts import _oidc_claims
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
@@ -45,16 +46,7 @@ from warehouse.jwt.verifier import WarehouseJWTVerifier
 from warehouse.predicates import AuthMethodsPredicate, JWTAudiencePredicate
 from warehouse.utils.security_policy import MultiSecurityPolicy
 
-ISSUER = "https://warehouse.example"
-AUDIENCES = {
-    "upload": "https://warehouse.example/upload",
-    "api": "https://warehouse.example/api",
-}
-
-
-@pytest.fixture(scope="module")
-def signing_key():
-    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+AUDIENCES = {"upload": UPLOAD_AUDIENCE, "api": API_AUDIENCE}
 
 
 @pytest.fixture
@@ -64,39 +56,15 @@ def clock():
 
 
 @pytest.fixture
-def signing_config(signing_key):
+def signing_config(warehouse_jwt_key):
     return WarehouseJWTIssuerFactory(
-        issuer=ISSUER, audiences=AUDIENCES, key_id="current", key=signing_key
+        issuer=ISSUER, audiences=AUDIENCES, key_id="current", key=warehouse_jwt_key
     )
 
 
 @pytest.fixture
 def issuer(signing_config, jwt_registry):
     return WarehouseJWTIssuer(registry=jwt_registry, config=signing_config)
-
-
-@pytest.fixture
-def settings(signing_key):
-    return {
-        "warehouse.jwt.enabled": True,
-        "warehouse.jwt.issuer": ISSUER,
-        "warehouse.jwt.upload_audience": AUDIENCES["upload"],
-        "warehouse.jwt.api_audience": AUDIENCES["api"],
-        "warehouse.jwt.signing_key_id": "current",
-        "warehouse.jwt.signing_key": signing_key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        ).decode(),
-        "warehouse.jwt.verification_keys": {
-            "current": signing_key.public_key()
-            .public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        },
-    }
 
 
 @pytest.fixture
@@ -113,41 +81,51 @@ class TestDisabledJWTIssuer:
         assert verifyClass(IJWTIssuer, DisabledJWTIssuer)
 
     @pytest.mark.parametrize("enabled", [None, False, "false"])
-    def test_disabled_even_with_signing_keys(self, settings, enabled, issue_args):
-        settings.pop("warehouse.jwt.enabled")
+    def test_disabled_even_with_signing_keys(
+        self, warehouse_jwt_settings, enabled, issue_args
+    ):
+        warehouse_jwt_settings.pop("warehouse.jwt.enabled")
         if enabled is not None:
-            settings["warehouse.jwt.enabled"] = enabled
-        factory = jwt_issuer_factory(settings)
+            warehouse_jwt_settings["warehouse.jwt.enabled"] = enabled
+        factory = jwt_issuer_factory(warehouse_jwt_settings)
         assert factory == DisabledJWTIssuer.create_service
-        assert jwt_verifier_factory(settings) == DisabledJWTVerifier.create_service
+        assert (
+            jwt_verifier_factory(warehouse_jwt_settings)
+            == DisabledJWTVerifier.create_service
+        )
         with pytest.raises(RuntimeError, match="JWT issuance is disabled"):
             factory(None, None).issue(**issue_args)
 
     def test_default_needs_no_configuration(self):
         assert jwt_issuer_factory({}) == DisabledJWTIssuer.create_service
 
-    def test_verification_only_needs_no_private_key(self, settings):
-        del settings["warehouse.jwt.signing_key"]
-        del settings["warehouse.jwt.signing_key_id"]
-        assert jwt_issuer_factory(settings) == DisabledJWTIssuer.create_service
+    def test_verification_only_needs_no_private_key(self, warehouse_jwt_settings):
+        del warehouse_jwt_settings["warehouse.jwt.signing_key"]
+        del warehouse_jwt_settings["warehouse.jwt.signing_key_id"]
+        assert (
+            jwt_issuer_factory(warehouse_jwt_settings)
+            == DisabledJWTIssuer.create_service
+        )
 
 
 class TestWarehouseJWTIssuerFactory:
     def test_rotated_key_can_verify_old_and_new_tokens(
-        self, settings, jwt_registry, issue_args, clock
+        self, warehouse_jwt_settings, jwt_registry, issue_args, clock
     ):
         request = types.SimpleNamespace(
             find_service=lambda *args, **kwargs: jwt_registry
         )
-        old = jwt_issuer_factory(settings)(None, request).issue(**issue_args)
+        old = jwt_issuer_factory(warehouse_jwt_settings)(None, request).issue(
+            **issue_args
+        )
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        settings["warehouse.jwt.signing_key_id"] = "next"
-        settings["warehouse.jwt.signing_key"] = key.private_bytes(
+        warehouse_jwt_settings["warehouse.jwt.signing_key_id"] = "next"
+        warehouse_jwt_settings["warehouse.jwt.signing_key"] = key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
         ).decode()
-        settings["warehouse.jwt.verification_keys"]["next"] = (
+        warehouse_jwt_settings["warehouse.jwt.verification_keys"]["next"] = (
             key.public_key()
             .public_bytes(
                 serialization.Encoding.PEM,
@@ -155,23 +133,25 @@ class TestWarehouseJWTIssuerFactory:
             )
             .decode()
         )
-        new = jwt_issuer_factory(settings)(None, request).issue(**issue_args)
+        new = jwt_issuer_factory(warehouse_jwt_settings)(None, request).issue(
+            **issue_args
+        )
         request.matched_route = types.SimpleNamespace(
             predicates=[
                 AuthMethodsPredicate({"jwt"}, None),
                 JWTAudiencePredicate("upload", None),
             ]
         )
-        verifier = jwt_verifier_factory(settings)(None, request)
+        verifier = jwt_verifier_factory(warehouse_jwt_settings)(None, request)
         assert jwt.get_unverified_header(old.token)["kid"] == "current"
         assert jwt.get_unverified_header(new.token)["kid"] == "next"
         assert verifier.verify(old.token).jti == old.jti
         assert verifier.verify(new.token).jti == new.jti
 
     def test_service_registration(
-        self, settings, db_session, issue_args, clock, mocker
+        self, warehouse_jwt_settings, db_session, issue_args, clock, mocker
     ):
-        with testing.testConfig(settings=settings) as config:
+        with testing.testConfig(settings=warehouse_jwt_settings) as config:
             config.include("pyramid_services")
             config.add_directive("add_periodic_task", mocker.Mock())
             config.include("warehouse.jwt")
@@ -186,10 +166,10 @@ class TestWarehouseJWTIssuerFactory:
             registry = request.find_service(IJWTRegistry, context=None)
             assert registry.is_active(issued.jti)
 
-    def test_immutable_configuration(self, signing_key):
+    def test_immutable_configuration(self, warehouse_jwt_key):
         audiences = dict(AUDIENCES)
         factory = WarehouseJWTIssuerFactory(
-            issuer=ISSUER, audiences=audiences, key_id="current", key=signing_key
+            issuer=ISSUER, audiences=audiences, key_id="current", key=warehouse_jwt_key
         )
         audiences["upload"] = "changed"
         assert factory.audiences == AUDIENCES
@@ -240,10 +220,10 @@ class TestWarehouseJWTIssuerFactory:
             "api_audience",
         ],
     )
-    def test_missing_configuration(self, settings, setting):
-        del settings[f"warehouse.jwt.{setting}"]
+    def test_missing_configuration(self, warehouse_jwt_settings, setting):
+        del warehouse_jwt_settings[f"warehouse.jwt.{setting}"]
         with pytest.raises(ConfigurationError, match="JWT"):
-            jwt_issuer_factory(settings)
+            jwt_issuer_factory(warehouse_jwt_settings)
 
     @pytest.mark.parametrize(
         ("setting", "value"),
@@ -261,15 +241,15 @@ class TestWarehouseJWTIssuerFactory:
             ("api_audience", AUDIENCES["upload"]),
         ],
     )
-    def test_invalid_settings(self, settings, setting, value):
-        settings[f"warehouse.jwt.{setting}"] = value
+    def test_invalid_settings(self, warehouse_jwt_settings, setting, value):
+        warehouse_jwt_settings[f"warehouse.jwt.{setting}"] = value
         with pytest.raises(ConfigurationError, match="JWT"):
-            jwt_issuer_factory(settings)
+            jwt_issuer_factory(warehouse_jwt_settings)
 
     @pytest.mark.parametrize("key_type", ["different", "public", "ec", "encrypted"])
-    def test_unusable_signing_key(self, settings, signing_key, key_type):
+    def test_unusable_signing_key(self, warehouse_jwt_settings, key_type):
         if key_type == "public":
-            pem = settings["warehouse.jwt.verification_keys"]["current"]
+            pem = warehouse_jwt_settings["warehouse.jwt.verification_keys"]["current"]
         else:
             key = (
                 ec.generate_private_key(ec.SECP256R1())
@@ -286,13 +266,13 @@ class TestWarehouseJWTIssuerFactory:
                 serialization.PrivateFormat.PKCS8,
                 encryption,
             ).decode()
-        settings["warehouse.jwt.signing_key"] = pem
+        warehouse_jwt_settings["warehouse.jwt.signing_key"] = pem
         with pytest.raises(
             ConfigurationError, match="Invalid JWT signing configuration"
         ):
-            jwt_issuer_factory(settings)
+            jwt_issuer_factory(warehouse_jwt_settings)
 
-    def test_unsupported_key_algorithm(self, settings, mocker):
+    def test_unsupported_key_algorithm(self, warehouse_jwt_settings, mocker):
         mocker.patch(
             "warehouse.jwt.issuer.load_pem_private_key",
             side_effect=UnsupportedAlgorithm("unsupported"),
@@ -300,7 +280,7 @@ class TestWarehouseJWTIssuerFactory:
         with pytest.raises(
             ConfigurationError, match="Invalid JWT signing configuration"
         ):
-            jwt_issuer_factory(settings)
+            jwt_issuer_factory(warehouse_jwt_settings)
 
 
 class TestWarehouseJWTIssuer:
@@ -313,7 +293,7 @@ class TestWarehouseJWTIssuer:
     def test_signed_roundtrip(
         self,
         issuer,
-        signing_key,
+        warehouse_jwt_key,
         jwt_registry,
         issue_args,
         clock,
@@ -331,7 +311,7 @@ class TestWarehouseJWTIssuer:
         verifier = WarehouseJWTVerifier(
             issuer=ISSUER,
             audience=AUDIENCES[audience],
-            keys={"current": signing_key.public_key()},
+            keys={"current": warehouse_jwt_key.public_key()},
         )
         verified = verifier.verify(issued.token)
         assert verified is not None
@@ -354,7 +334,7 @@ class TestWarehouseJWTIssuer:
         }
         claims = jwt.decode(
             issued.token,
-            signing_key.public_key(),
+            warehouse_jwt_key.public_key(),
             algorithms=["RS256"],
             issuer=ISSUER,
             audience=AUDIENCES[audience],
@@ -378,7 +358,7 @@ class TestWarehouseJWTIssuer:
         wrong_audience = WarehouseJWTVerifier(
             issuer=ISSUER,
             audience=AUDIENCES[other],
-            keys={"current": signing_key.public_key()},
+            keys={"current": warehouse_jwt_key.public_key()},
         )
         assert wrong_audience.verify(issued.token) is None
         clock.move_to(issued.expires_at)
@@ -503,7 +483,7 @@ class TestWarehouseJWTIssuer:
 
     @pytest.mark.parametrize("narrow", [False, True])
     def test_publisher_metadata_and_live_authorization(
-        self, issuer, jwt_registry, db_session, signing_key, clock, narrow
+        self, issuer, jwt_registry, db_session, warehouse_jwt_key, clock, narrow
     ):
         publisher = GitHubPublisherFactory()
         projects = [ProjectFactory(oidc_publishers=[publisher]) for _ in range(3)]
@@ -531,7 +511,7 @@ class TestWarehouseJWTIssuer:
         verifier = WarehouseJWTVerifier(
             issuer=ISSUER,
             audience=AUDIENCES["upload"],
-            keys={"current": signing_key.public_key()},
+            keys={"current": warehouse_jwt_key.public_key()},
         )
         with testing.testConfig() as config:
             config.include("pyramid_services")
