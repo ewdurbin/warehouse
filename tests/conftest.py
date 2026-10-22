@@ -54,6 +54,8 @@ from warehouse.email import services as email_services
 from warehouse.email.interfaces import IEmailSender
 from warehouse.helpdesk import services as helpdesk_services
 from warehouse.helpdesk.interfaces import IAdminNotificationService, IHelpDeskService
+from warehouse.jwt.interfaces import IJWTRegistry
+from warehouse.jwt.services import DatabaseJWTRegistry
 from warehouse.macaroons import services as macaroon_services
 from warehouse.macaroons.interfaces import IMacaroonService
 from warehouse.metrics import IMetricsService
@@ -218,6 +220,7 @@ def pyramid_services(
     activestate_oidc_service,
     integrity_service,
     macaroon_service,
+    jwt_registry,
     helpdesk_service,
     notification_service,
     query_results_cache_service,
@@ -247,6 +250,7 @@ def pyramid_services(
     )
     services.register_service(integrity_service, IIntegrityService, None)
     services.register_service(macaroon_service, IMacaroonService, None, name="")
+    services.register_service(jwt_registry, IJWTRegistry, None)
     services.register_service(helpdesk_service, IHelpDeskService, None)
     services.register_service(notification_service, IAdminNotificationService)
     services.register_service(query_results_cache_service, IQueryResultsCache)
@@ -527,6 +531,11 @@ def project_service(db_session, metrics, ratelimiters=None):
     return packaging_services.ProjectService(
         db_session, metrics, ratelimiters=ratelimiters
     )
+
+
+@pytest.fixture
+def jwt_registry(db_session):
+    return DatabaseJWTRegistry(db_session)
 
 
 @pytest.fixture
