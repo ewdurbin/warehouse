@@ -39,7 +39,7 @@ class TestDisabledJWTVerifier:
             request.registry = config.registry
             apply_request_extensions(request)
             request.matched_route = types.SimpleNamespace(
-                predicates=[AuthMethodsPredicate({"api-key"}, None)]
+                predicates=[AuthMethodsPredicate({"jwt"}, None)]
             )
             request.headers["Authorization"] = "Bearer header.payload.signature"
             verifier = request.find_service(IJWTVerifier, context=None)

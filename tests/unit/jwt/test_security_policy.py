@@ -83,7 +83,7 @@ def jwt_request(policy, verifier, registry, user_service):
         request.registry = config.registry
         apply_request_extensions(request)
         request.matched_route = types.SimpleNamespace(
-            name="api.echo", predicates=[AuthMethodsPredicate({"api-key"}, None)]
+            name="api.echo", predicates=[AuthMethodsPredicate({"jwt"}, None)]
         )
         request.headers["Authorization"] = f"Bearer {TOKEN}"
         yield request
@@ -125,7 +125,9 @@ class TestJWTSecurityPolicy:
         with pytest.raises(NotImplementedError):
             policy.authenticated_userid(jwt_request)
 
-    @pytest.mark.parametrize("methods", [None, set(), {"session"}, {"macaroon"}])
+    @pytest.mark.parametrize(
+        "methods", [None, set(), {"session"}, {"macaroon"}, {"api-key"}]
+    )
     def test_explicit_route_opt_in(self, methods, jwt_request, verifier):
         jwt_request.matched_route.predicates = (
             [] if methods is None else [AuthMethodsPredicate(methods, None)]
@@ -171,7 +173,7 @@ class TestJWTSecurityPolicy:
         verifier.verify.return_value = verified
         assert jwt_request.identity == UserContext(user, macaroon=None)
         assert jwt_request.authenticated_userid == user.id
-        assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
+        assert jwt_request.authentication_method == AuthenticationMethod.JWT
         verifier.verify.assert_called_once_with(TOKEN)
         registry.get_active.assert_called_once_with(verified.jti)
         user_service.get_user.assert_called_once_with(user.id)
@@ -334,7 +336,7 @@ class TestJWTSecurityPolicy:
         user_service.get_user.assert_not_called()
         user_service.is_disabled.assert_not_called()
         if exists:
-            assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
+            assert jwt_request.authentication_method == AuthenticationMethod.JWT
             assert jwt_request.identity.__principals__() == [
                 Authenticated,
                 f"oidc:{subject.id}",

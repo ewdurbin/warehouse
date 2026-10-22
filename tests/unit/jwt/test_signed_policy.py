@@ -50,7 +50,7 @@ class TestSignedJWTPolicy:
             request.registry = config.registry
             apply_request_extensions(request)
             request.matched_route = types.SimpleNamespace(
-                predicates=[AuthMethodsPredicate({"api-key"}, None)]
+                predicates=[AuthMethodsPredicate({"jwt"}, None)]
             )
             request.headers["Authorization"] = f"Bearer {sign()}"
             yield request
@@ -61,7 +61,7 @@ class TestSignedJWTPolicy:
             __acl__=[(Allow, principal, Permissions.APIEcho)]
         )
         assert jwt_request.identity == UserContext(user, macaroon=None)
-        assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
+        assert jwt_request.authentication_method == AuthenticationMethod.JWT
         assert bool(jwt_request.has_permission(Permissions.APIEcho, context)) == (
             principal == f"user:{USER_ID}"
         )
@@ -289,7 +289,7 @@ class TestSignedPublisherJWTPolicy:
             apply_request_extensions(request)
             request.db = db_session
             request.matched_route = types.SimpleNamespace(
-                predicates=[AuthMethodsPredicate({"api-key"}, None)]
+                predicates=[AuthMethodsPredicate({"jwt"}, None)]
             )
             request.headers["Authorization"] = f"Bearer {sign()}"
             yield request
@@ -304,7 +304,7 @@ class TestSignedPublisherJWTPolicy:
         assert _user(jwt_request) is None
         assert _oidc_publisher(jwt_request) is publisher
         assert _oidc_claims(jwt_request) is None
-        assert jwt_request.authentication_method == AuthenticationMethod.API_KEY
+        assert jwt_request.authentication_method == AuthenticationMethod.JWT
         assert jwt_request.has_permission(Permissions.ProjectsUpload, publisher_project)
 
     def test_removing_publisher_from_project_denies(
