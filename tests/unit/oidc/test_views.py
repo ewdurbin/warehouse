@@ -262,7 +262,7 @@ def test_mint_token_from_oidc_creates_expected_service(
         IOIDCPublisherService, name=service_name
     )
     mint_token.assert_called_once_with(
-        oidc_service, token, unverified_issuer, db_request
+        oidc_service, token, unverified_issuer, db_request, token_format="macaroon"
     )
 
 

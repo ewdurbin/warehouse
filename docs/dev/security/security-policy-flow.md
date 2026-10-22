@@ -567,3 +567,10 @@ upload verifier fixes the expected audience independently of route metadata.
 Only a valid publisher credential can revoke its own active registry entry, even
 if the publisher has since been deleted. The endpoint keeps its non-enumerating
 202 response, its existing macaroon behavior, and request-owned transactions.
+
+The OIDC exchange accepts `token_format: "jwt"` as an explicit opt-in; omitted
+format or `"macaroon"` preserves existing issuance. Successful upstream validation
+and replay protection precede signing. Warehouse chooses the publisher subject,
+upload audience, upload authorization detail, and five-minute lifetime; clients
+cannot override those claims. OIDC provenance stays in registry metadata rather
+than the JWT. The same flow supports pending publisher reification.
