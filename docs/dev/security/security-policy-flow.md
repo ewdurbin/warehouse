@@ -508,7 +508,7 @@ The JWT foundation lives in `warehouse.jwt`. It does not activate authentication
 `IJWTVerifier` returns immutable verified claims or `None`; the default
 `DisabledJWTVerifier` rejects every credential.
 
-The wire profile uses `RS256`, the `warehouse-api-key+jwt` type, canonical UUID
+The wire profile uses `RS256`, the `pypi-access+jwt` type, canonical UUID
 subjects/JTIs, and at most five minutes between issuance and expiration.
 User and publisher subjects are explicitly distinguished. Authorization uses
 RFC 9396-based `authorization_details` with `type="warehouse"` and an explicit

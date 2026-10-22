@@ -5,7 +5,7 @@ from uuid import UUID
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import AuthorizationType, ResourceKind
 
-MEDIA_TYPE = "warehouse-api-key+jwt"
+MEDIA_TYPE = "pypi-access+jwt"
 MAX_LIFETIME_SECONDS = 300
 
 _ACTION_RESOURCES = {

@@ -12,7 +12,7 @@ from warehouse.jwt.profile import (
 
 
 def test_profile_constants():
-    assert MEDIA_TYPE == "warehouse-api-key+jwt"
+    assert MEDIA_TYPE == "pypi-access+jwt"
     assert MAX_LIFETIME_SECONDS == 300
 
 
