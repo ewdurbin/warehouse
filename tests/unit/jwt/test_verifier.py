@@ -204,6 +204,7 @@ class TestWarehouseJWTVerifier:
         [
             ("typ", "JWT"),
             ("typ", "id_token"),
+            ("typ", "warehouse-api-key+jwt"),
             ("typ", None),
             ("alg", "HS256"),
             ("alg", "none"),
