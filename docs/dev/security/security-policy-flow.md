@@ -16,7 +16,7 @@ or deny a request.
 - [`warehouse/accounts/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/security_policy.py): `SessionSecurityPolicy`, `BasicAuthSecurityPolicy`, and the session authorization gates (verified email, two-factor)
 - [`warehouse/accounts/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/utils.py): `UserContext`
 - [`warehouse/macaroons/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/macaroons/security_policy.py): `MacaroonSecurityPolicy` (API tokens and Trusted Publishing)
-- [`warehouse/jwt/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/security_policy.py): `JWTSecurityPolicy` (JWT-backed API keys)
+- [`warehouse/jwt/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/security_policy.py): `JWTSecurityPolicy` (JWT authentication)
 - [`warehouse/jwt/interfaces.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/interfaces.py) and [`warehouse/jwt/services.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/services.py): the JWT verifier and registry contracts, their services, and the rejecting default verifier
 - [`warehouse/jwt/verifier.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/verifier.py): `WarehouseJWTVerifier`, the opt-in verifier for Warehouse-issued JWTs
 - [`warehouse/jwt/issuer.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/issuer.py): the opt-in signing configuration and request-scoped `WarehouseJWTIssuer`
@@ -397,7 +397,7 @@ Warehouse-issued token profile, but requires explicit configuration to enable:
   to the verifier. Audience arrays are rejected. `sub` is a canonical Warehouse
   UUID and the required `subject_kind` is either `user` or `publisher`.
 - `jti` is a required canonical UUID identifying the issued credential. Issuance
-  will use the registry's UUIDv7 IDs; this claim alone does not prove registration.
+  uses the registry's UUIDv7 IDs; this claim alone does not prove registration.
 - `iat` and `exp` are required integer NumericDates. Optional `nbf` is also an
   integer. Future issuance/not-before times and expired tokens are rejected,
   with no clock-skew allowance. The issued lifetime must satisfy
@@ -438,9 +438,11 @@ Warehouse-issued token profile, but requires explicit configuration to enable:
   Any invalid object or action rejects the whole token, even if another is valid.
   Unknown top-level claims and the previous experimental `grants`,
   `permissions`/`project_ids`, and `scope` claims are rejected too.
-- First-time project creation, organization identities, and organization resource
-  identifiers are unsupported. Adding a type, action, or resource kind requires
-  explicit validation, resolution/authorization, and tests.
+- JWT upload authorization requires an existing `Project` context, so an upload
+  request cannot create the project. A pending Trusted Publisher exchange can
+  create the project before issuing the JWT. Organization identities and
+  organization resource identifiers are unsupported. Adding a type, action, or
+  resource kind requires explicit validation, resolution/authorization, and tests.
 
 For example, the authorization claim for reporting observations on any project
 (still requiring observer privileges) is:
@@ -503,8 +505,7 @@ requests, and API tokens must not authenticate uploads, even if their permission
 would otherwise allow the operation. Permissions and project scopes further
 restrict operations within the intended recipient; an audience match alone does
 not grant permission.
-The concrete issuer and audience values will be specified when deployment
-and minting are implemented.
+Deployment configuration supplies the concrete issuer and audience values.
 
 Supply the expected issuer and recipient-specific audience explicitly to each
 verifier and require exact matches. `WarehouseJWTVerifierFactory` selects the
@@ -627,7 +628,7 @@ registry's `additional["oidc"]`, not the JWT. The response keeps the existing
 The burn endpoint also accepts a Warehouse JWT in its existing `{"token": "..."}`
 JSON payload. It uses the named `IJWTVerifier` service `"upload"`, explicitly bound
 by server code to the upload audience independently of request route metadata.
-This does not make burn an API-key-authenticated route. Only a correctly signed,
+This does not opt the burn route into JWT authentication. Only a correctly signed,
 unexpired publisher JWT with an active registry entry may delete its own JTI;
 user JWTs and API-audience JWTs cannot. Publisher deletion does not prevent
 self-revocation. Invalid, expired, absent, or already-burned credentials retain

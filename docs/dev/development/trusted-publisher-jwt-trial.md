@@ -11,10 +11,7 @@ or danger-API credentials.
 With the [Compose development setup](getting-started.md) built, run:
 
 ```shell
-docker compose run --rm -T \
-  -e PYTHONPATH=/opt/warehouse/src/pyramid_components/src:/opt/warehouse/src \
-  tests python -m pytest --postgresql-host db -n 0 -q \
-  tests/functional/forklift/test_jwt.py
+make tests T=tests/functional/forklift/test_jwt.py
 ```
 
 This uses a temporary **test database on Compose's PostgreSQL service**, not the
@@ -32,7 +29,7 @@ replay protection across credential formats, and the unchanged macaroon flow.
 
 ## Enable a local web-server trial
 
-Apply the registry migrations with `make runmigrations` before issuing tokens.
+Apply the registry migration with `make runmigrations` before issuing tokens.
 The registry and its `additional` metadata column must exist on every deployment
 using the feature.
 
@@ -205,7 +202,7 @@ Keep the feature disabled outside an explicitly configured trial. Before a real
 deployment, distribute the correct issuer, separate audiences, and public keys to
 every verifier; supply the matching private key only where issuance is needed.
 Verification-only instances can omit **both** signing settings. Confirm the
-registry migrations, cleanup worker, real OIDC backend, HTTPS endpoints, and client
+registry migration, cleanup worker, real OIDC backend, HTTPS endpoints, and client
 Bearer support before inviting opt-in clients. This branch does not update
 external publishing clients or provide secret-scanning integration for JWTs.
 
@@ -213,13 +210,18 @@ For normal signing-key rotation, change the active key ID/private key while
 retaining old public keys for at least the remaining five-minute token lifetime
 after the last old-key issuer stops. Retire a compromised key immediately instead.
 
-To stop a local trial, set `JWT_ENABLED=false` and recreate the web service;
-macaroon clients continue working. Disabling JWT verification also disables JWT
-burning, so burn outstanding trial tokens first if you need their registry rows
-removed immediately. Otherwise their short expiry still bounds their usability,
-and scheduled cleanup removes expired rows. Disabling JWTs does not itself delete
-rows or revoke unexpired tokens if you re-enable the feature before they expire.
-Remove local private keys and exported signing variables when finished.
+To stop a local trial, burn outstanding trial tokens first if you need their
+registry rows removed immediately: disabling JWT verification also disables JWT
+burning. Remove the JWT environment entries added above from your private Compose
+override, preserving any unrelated settings, then recreate the web service with
+`docker compose up -d --no-deps --force-recreate web`. This restores the default
+disabled configuration; macaroon clients continue working. Remove the local key
+files and unset the exported JWT variables after updating the override so later
+Compose commands can load its configuration.
+
+Disabling JWTs does not itself delete registry rows or revoke unexpired tokens if
+you re-enable the feature before they expire. Their short expiry bounds their
+usability, and scheduled cleanup removes expired rows.
 
 See [Security Policy Flow](../security/security-policy-flow.md#4d-jwtsecuritypolicy)
 for the complete JWT profile, authorization rules, registry contract, and settings.
