@@ -528,3 +528,6 @@ registry-only `additional` metadata. Registration, fresh liveness queries, and
 revocation participate in the caller's transaction. Missing, expired, or deleted
 rows never establish a live credential; database errors propagate. Metadata
 cannot override signed claims or grant permissions.
+
+An hourly task deletes expired registry entries and their metadata; expiration
+is enforced on every liveness query independently of cleanup timing.

@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+from celery.schedules import crontab
+
 from warehouse.jwt import includeme
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.services import (
     DatabaseJWTRegistry,
     DisabledJWTVerifier,
 )
+from warehouse.jwt.tasks import delete_expired_jwts
 
 
 def test_includeme(mocker):
@@ -21,3 +24,6 @@ def test_includeme(mocker):
         mocker.call(DisabledJWTVerifier.create_service, IJWTVerifier),
         mocker.call(DatabaseJWTRegistry.create_service, IJWTRegistry),
     ]
+    config.add_periodic_task.assert_called_once_with(
+        crontab(minute=0), delete_expired_jwts
+    )
