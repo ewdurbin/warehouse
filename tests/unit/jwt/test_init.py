@@ -22,6 +22,7 @@ def test_includeme(mocker):
 
     assert config.register_service_factory.call_args_list == [
         mocker.call(DisabledJWTVerifier.create_service, IJWTVerifier),
+        mocker.call(DisabledJWTVerifier.create_service, IJWTVerifier, name="upload"),
         mocker.call(DatabaseJWTRegistry.create_service, IJWTRegistry),
         mocker.call(DisabledJWTIssuer.create_service, IJWTIssuer),
     ]

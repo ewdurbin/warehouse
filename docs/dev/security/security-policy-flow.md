@@ -551,8 +551,8 @@ settings are supplied. The configuration surface for explicitly opting in is:
 | `warehouse.jwt.signing_key_id` | `JWT_SIGNING_KEY_ID` | Optional active signing key ID; must exist in the verification key mapping |
 | `warehouse.jwt.signing_key` | `JWT_SIGNING_KEY` | Optional PEM RSA private key (unencrypted, at least 2048 bits); must match the public key for the signing key ID |
 
-When enabled, startup validates the configuration and loads the public keys
-once. Missing/invalid settings, shared upload/API audiences, private keys,
+When enabled, startup validates the configuration and loads the public keys.
+Missing/invalid settings, shared upload/API audiences, private keys,
 non-RSA keys, and RSA keys smaller than 2048 bits fail configuration rather than
 silently disabling verification. Multiple key IDs support overlapping
 verification keys during rotation. Changing settings or keys requires rebuilding
@@ -617,10 +617,19 @@ registry's `additional["oidc"]`, not the JWT. The response keeps the existing
 15-minute lifetime. Use JWTs as `Authorization: Bearer <token>`, never Basic
 `__token__` credentials.
 
+The burn endpoint also accepts a Warehouse JWT in its existing `{"token": "..."}`
+JSON payload. It uses the named `IJWTVerifier` service `"upload"`, explicitly bound
+by server code to the upload audience independently of request route metadata.
+This does not make burn an API-key-authenticated route. Only a correctly signed,
+unexpired publisher JWT with an active registry entry may delete its own JTI;
+user JWTs and API-audience JWTs cannot. Publisher deletion does not prevent
+self-revocation. Invalid, expired, absent, or already-burned credentials retain
+the same HTTP 202 response; database failures propagate and must not be reported
+as successful revocation. The caller's transaction commits deletion and events.
+
 The JWT policy enforces registry liveness at authentication and authorization;
-the cryptographic verifier remains independent of the database. JWT support in
-the burn endpoint, full upload-flow validation, and deployment activation
-remain follow-up work. Before
+the cryptographic verifier remains independent of the database. Full upload-flow
+validation and deployment activation remain follow-up work. Before
 enabling JWT authentication in a deployment, complete those integrations and
 adapt the upload handler's macaroon-specific credential handling. User upload
 email and MFA requirements remain the upload handler's responsibility. The

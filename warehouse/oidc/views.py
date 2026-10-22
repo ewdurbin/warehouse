@@ -29,7 +29,7 @@ from warehouse.jwt.claims import (
     SubjectKind,
     SubjectRef,
 )
-from warehouse.jwt.interfaces import IJWTIssuer
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTVerifier
 from warehouse.macaroons import InvalidMacaroonError, caveats
 from warehouse.macaroons.interfaces import IMacaroonService
 from warehouse.macaroons.models import Macaroon
@@ -542,6 +542,10 @@ def burn_oidc_issued_token(request: Request):
         )
         return _accepted(request=request)
 
+    # Format detection only selects a verifier; it does not trust any claims.
+    if payload.token.count(".") == 2:
+        return _burn_jwt(payload.token, request)
+
     macaroon_service: DatabaseMacaroonService = request.find_service(
         IMacaroonService, context=None
     )
@@ -591,4 +595,38 @@ def burn_oidc_issued_token(request: Request):
         ],
     )
 
+    return _accepted(request=request)
+
+
+def _burn_jwt(token: str, request: Request):
+    # Burn is not an API_KEY-authenticated route. Bind verification explicitly to
+    # upload; never derive the expected audience from the submitted credential.
+    verifier = request.find_service(IJWTVerifier, name="upload", context=None)
+    verified = verifier.verify(token)
+    if verified is None or verified.subject.kind != SubjectKind.PUBLISHER:
+        request.metrics.increment(
+            "warehouse.oidc.burn_oidc_issued_token",
+            tags=["status:failure", "failure_reason:invalid_jwt"],
+        )
+        return _accepted(request=request)
+
+    registry = request.find_service(IJWTRegistry, context=None)
+    if not registry.is_active(verified.jti):
+        return _accepted(request=request)
+
+    registry.revoke(verified.jti)
+    publisher = request.db.get(OIDCPublisher, verified.subject.id)
+    # A publisher may have been removed since issuance. A valid credential can
+    # still revoke itself; an absent publisher just means there are no events.
+    if publisher is not None:
+        for project in publisher.projects:
+            project.record_event(
+                tag=EventTag.Project.ShortLivedAPITokenRevoked,
+                request=request,
+                additional={},
+            )
+    request.metrics.increment(
+        "warehouse.oidc.burn_oidc_issued_token",
+        tags=["status:success", "token_format:jwt"],
+    )
     return _accepted(request=request)
