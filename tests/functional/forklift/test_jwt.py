@@ -57,8 +57,20 @@ def upstream_key():
 
 @pytest.fixture
 def webtest(
-    database, tm, warehouse_jwt_settings, upstream_key, mockredis, mocker, tmp_path
+    database,
+    tm,
+    warehouse_jwt_settings,
+    warehouse_jwt_signer,
+    upstream_key,
+    mockredis,
+    mocker,
+    tmp_path,
 ):
+    # Keep the real issuance pipeline while replacing the external KMS service.
+    mocker.patch(
+        "warehouse.jwt.KMSJWTSignerService.from_settings",
+        return_value=warehouse_jwt_signer,
+    )
     # Real OIDC signature/claim verification, with local key discovery and an
     # in-memory replay cache. No request is made to a real identity provider.
     mocker.patch.object(

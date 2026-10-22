@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 
 from tests.common.constants import DUMMY_GITHUB_OIDC_JWT
 from tests.common.db.accounts import UserFactory
-from tests.common.db.oidc import GitHubPublisherFactory, PendingGitHubPublisherFactory
+from tests.common.db.oidc import PendingGitHubPublisherFactory
 from tests.common.db.packaging import ProjectFactory
 from warehouse.authnz import Permissions
 from warehouse.events.tags import EventTag
@@ -21,45 +21,13 @@ from warehouse.jwt.claims import (
     SubjectKind,
     SubjectRef,
 )
-from warehouse.jwt.interfaces import IJWTIssuer
 from warehouse.jwt.models import IssuedJWT
-from warehouse.jwt.services import (
-    jwt_issuer_factory,
-)
-from warehouse.jwt.verifier import WarehouseJWTVerifier
 from warehouse.macaroons.models import Macaroon
 from warehouse.oidc import views
 from warehouse.oidc.models import GitHubPublisher
 from warehouse.packaging.models import Project
 from warehouse.rate_limiting import DummyRateLimiter
 from warehouse.rate_limiting.interfaces import IRateLimiter
-
-
-@pytest.fixture
-def issuer(db_request, pyramid_services, warehouse_jwt_settings):
-    service = jwt_issuer_factory(warehouse_jwt_settings)(None, db_request)
-    pyramid_services.register_service(service, IJWTIssuer, None)
-    return service
-
-
-@pytest.fixture
-def verifier(warehouse_jwt_key, warehouse_jwt_settings):
-    return WarehouseJWTVerifier(
-        issuer=warehouse_jwt_settings["warehouse.jwt.issuer"],
-        audience=warehouse_jwt_settings["warehouse.jwt.upload_audience"],
-        keys={"current": warehouse_jwt_key.public_key()},
-    )
-
-
-@pytest.fixture
-def publisher(db_session):
-    return GitHubPublisherFactory(
-        repository_name="bar",
-        repository_owner="foo",
-        repository_owner_id="123",
-        workflow_filename="example.yml",
-        environment="fake",
-    )
 
 
 def request_jwt(db_request, **extra):
@@ -93,8 +61,8 @@ def test_disabled_issuance_has_no_side_effects(db_request, github_oidc_service, 
 
 
 @pytest.mark.parametrize("token_format", [None, "macaroon"])
-def test_macaroon_remains_default(db_request, publisher, token_format, mocker):
-    ProjectFactory(oidc_publishers=[publisher])
+def test_macaroon_remains_default(db_request, jwt_publisher, token_format, mocker):
+    ProjectFactory(oidc_publishers=[jwt_publisher])
     payload = {"token": DUMMY_GITHUB_OIDC_JWT}
     if token_format is not None:
         payload["token_format"] = token_format
@@ -106,9 +74,14 @@ def test_macaroon_remains_default(db_request, publisher, token_format, mocker):
 
 
 def test_exchange_issues_publisher_upload_jwt(
-    db_request, publisher, issuer, verifier, github_oidc_service, mocker
+    db_request,
+    jwt_publisher,
+    jwt_issuer,
+    jwt_upload_verifier,
+    github_oidc_service,
+    mocker,
 ):
-    projects = [ProjectFactory(oidc_publishers=[publisher]) for _ in range(3)]
+    projects = [ProjectFactory(oidc_publishers=[jwt_publisher]) for _ in range(3)]
     verify_upstream = mocker.spy(github_oidc_service, "verify_jwt_signature")
     with freeze_time("2026-10-22 12:00:00+00:00", ignore=["_pytest"]):
         response = request_jwt(
@@ -118,8 +91,8 @@ def test_exchange_issues_publisher_upload_jwt(
             lifetime=99999,
             authorization_details=[{"actions": ["*"]}],
         )
-        verified = verifier.verify(response["token"])
-        assert verified.subject == SubjectRef(SubjectKind.PUBLISHER, publisher.id)
+        verified = jwt_upload_verifier.verify(response["token"])
+        assert verified.subject == SubjectRef(SubjectKind.PUBLISHER, jwt_publisher.id)
         assert verified.authorization_details == (
             AuthorizationDetail(
                 AuthorizationType.WAREHOUSE, (Permissions.ProjectsUpload,)
@@ -128,10 +101,10 @@ def test_exchange_issues_publisher_upload_jwt(
         assert response["expires"] == int(verified.expires_at.timestamp())
         assert (verified.expires_at - verified.issued_at).total_seconds() == 300
         assert response["success"] is True
-        entry = issuer.registry.get_active(verified.jti)
+        entry = jwt_issuer.registry.get_active(verified.jti)
         assert entry.expires_at == verified.expires_at
         assert entry.additional == {
-            "oidc": publisher.stored_claims(verify_upstream.spy_return)
+            "oidc": jwt_publisher.stored_claims(verify_upstream.spy_return)
         }
         assert db_request.db.scalar(select(func.count()).select_from(Macaroon)) == 0
         for project in projects:
@@ -142,7 +115,7 @@ def test_exchange_issues_publisher_upload_jwt(
 
 
 def test_pending_publisher_can_opt_in(
-    db_request, issuer, verifier, pyramid_services, mocker
+    db_request, jwt_issuer, jwt_upload_verifier, pyramid_services, mocker
 ):
     user = UserFactory()
     pending = PendingGitHubPublisherFactory(
@@ -167,7 +140,7 @@ def test_pending_publisher_can_opt_in(
     )
     publisher = db_request.db.scalar(select(GitHubPublisher))
     assert project.oidc_publishers == [publisher]
-    assert verifier.verify(response["token"]).subject == SubjectRef(
+    assert jwt_upload_verifier.verify(response["token"]).subject == SubjectRef(
         SubjectKind.PUBLISHER, publisher.id
     )
     assert db_request.db.scalar(select(func.count()).select_from(Macaroon)) == 0
@@ -176,16 +149,16 @@ def test_pending_publisher_can_opt_in(
 
 @pytest.mark.parametrize("failure", ["signature", "publisher", "replay"])
 def test_failed_upstream_validation_cannot_issue(
-    db_request, publisher, issuer, github_oidc_service, failure, mocker
+    db_request, jwt_publisher, jwt_issuer, github_oidc_service, failure, mocker
 ):
-    ProjectFactory(oidc_publishers=[publisher])
-    issue = mocker.spy(issuer, "issue")
+    ProjectFactory(oidc_publishers=[jwt_publisher])
+    issue = mocker.spy(jwt_issuer, "issue")
     if failure == "signature":
         mocker.patch.object(
             github_oidc_service, "verify_jwt_signature", return_value=None
         )
     elif failure == "publisher":
-        publisher.repository_owner = "other-owner"
+        jwt_publisher.repository_owner = "other-owner"
     else:
         claims = github_oidc_service.verify_jwt_signature(
             DUMMY_GITHUB_OIDC_JWT, "https://token.actions.githubusercontent.com"
@@ -204,9 +177,9 @@ def test_failed_upstream_validation_cannot_issue(
 
 
 def test_replay_claim_precedes_issuance(
-    db_request, publisher, issuer, github_oidc_service, mocker
+    db_request, jwt_publisher, jwt_issuer, github_oidc_service, mocker
 ):
-    ProjectFactory(oidc_publishers=[publisher])
+    ProjectFactory(oidc_publishers=[jwt_publisher])
     claims = github_oidc_service.verify_jwt_signature(
         DUMMY_GITHUB_OIDC_JWT, "https://token.actions.githubusercontent.com"
     )
@@ -223,23 +196,23 @@ def test_replay_claim_precedes_issuance(
     mocker.patch.object(
         github_oidc_service, "store_jwt_identifier", side_effect=consume
     )
-    original = issuer.issue
+    original = jwt_issuer.issue
 
     def issue(**kwargs):
         order.append("issue")
         return original(**kwargs)
 
-    mocker.patch.object(issuer, "issue", side_effect=issue)
+    mocker.patch.object(jwt_issuer, "issue", side_effect=issue)
     assert request_jwt(db_request)["success"]
     assert order == ["consume", "issue"]
 
 
 def test_signing_failure_propagates_and_rolls_back(
-    db_request, publisher, issuer, mocker
+    db_request, jwt_publisher, jwt_issuer, mocker
 ):
-    ProjectFactory(oidc_publishers=[publisher])
-    mocker.patch(
-        "warehouse.jwt.issuer.jwt.encode", side_effect=RuntimeError("signing failed")
+    ProjectFactory(oidc_publishers=[jwt_publisher])
+    mocker.patch.object(
+        type(jwt_issuer.signer), "sign", side_effect=RuntimeError("signing failed")
     )
     with (
         pytest.raises(RuntimeError, match="signing failed"),
