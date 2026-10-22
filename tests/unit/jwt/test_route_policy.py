@@ -31,6 +31,12 @@ from warehouse.jwt.services import (
 from warehouse.utils.security_policy import AuthenticationMethod
 
 
+@pytest.fixture
+def user(db_session):
+    return UserFactory(id=UUID(USER_ID), clear_pwd="password")
+
+
+@pytest.mark.usefixtures("user")
 class TestAudienceJWTService:
     @pytest.mark.parametrize(
         ("path", "route_name", "audience", "permission"),
@@ -147,12 +153,13 @@ class TestAudienceJWTService:
         request.headers["X-JWT-Audience"] = claims["aud"]
         assert request.identity is None
 
+    def test_unknown_subject_does_not_authenticate(self, make_request, sign, claims):
+        claims["sub"] = OTHER_ID
+        request = make_request("/danger-api/echo", sign())
+        assert request.identity is None
+
 
 class TestRegisteredJWTPolicy:
-    @pytest.fixture
-    def user(self, db_session):
-        return UserFactory()
-
     @pytest.fixture(params=["user", "publisher"])
     def subject_kind(self, request):
         return request.param
@@ -292,7 +299,7 @@ class TestRegisteredJWTPolicy:
         clock.move_to(expires_at)
         result = request.has_permission(Permissions.ProjectsUpload, project)
         assert not result
-        assert result.reason == "invalid_api_key"
+        assert result.reason == "invalid_jwt"
         # Expired JWTs fail verification before consulting the registry again.
         assert active_check.call_args_list == [mocker.call(registered_jti)] * (
             1 if expiration == "registry" else 0
@@ -333,7 +340,7 @@ class TestRegisteredJWTPolicy:
                 writer.commit()
                 result = request.has_permission(Permissions.ProjectsUpload, project)
                 assert not result
-                assert result.reason == "invalid_api_key"
+                assert result.reason == "invalid_jwt"
                 assert active_check.call_args_list == [mocker.call(token_id)] * (
                     2 if already_authorized else 1
                 )
@@ -351,7 +358,7 @@ class TestRegisteredJWTPolicy:
 class TestSignedObservationJWTPolicy:
     @pytest.fixture
     def user(self, db_session):
-        return UserFactory(is_observer=True)
+        return UserFactory(is_observer=True, clear_pwd="password")
 
     @pytest.fixture(autouse=True)
     def observation_claims(self, claims, user):
