@@ -3,8 +3,13 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+import jwt
 import pytest
 
+from cryptography.hazmat.primitives.asymmetric import rsa
+from freezegun import freeze_time
+
+from tests.common.jwt import API_AUDIENCE, ISSUER, JTI, NOW, PROJECT_ID, USER_ID
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
     AuthorizationDetail,
@@ -15,6 +20,7 @@ from warehouse.jwt.claims import (
     SubjectRef,
     VerifiedJWT,
 )
+from warehouse.jwt.verifier import WarehouseJWTVerifier
 
 
 @pytest.fixture
@@ -40,4 +46,75 @@ def verified():
                 AuthorizationType.WAREHOUSE, (Permissions.APIObservationsAdd,), project
             ),
         ),
+    )
+
+
+@pytest.fixture(scope="module")
+def signing_keys():
+    return [
+        rsa.generate_private_key(public_exponent=65537, key_size=2048) for _ in range(2)
+    ]
+
+
+@pytest.fixture
+def clock():
+    with freeze_time(datetime.fromtimestamp(NOW, UTC), ignore=["_pytest"]) as clock:
+        yield clock
+
+
+@pytest.fixture
+def claims():
+    return {
+        "iss": ISSUER,
+        "aud": API_AUDIENCE,
+        "sub": USER_ID,
+        "subject_kind": "user",
+        "jti": JTI,
+        "iat": NOW - 60,
+        "exp": NOW + 240,
+        "authorization_details": [
+            {
+                "type": "warehouse",
+                "actions": ["projects:upload"],
+                "identifier": f"project:{PROJECT_ID}",
+            },
+            {"type": "warehouse", "actions": ["api:echo"]},
+            {
+                "type": "warehouse",
+                "actions": ["api:observations:add"],
+                "identifier": f"project:{PROJECT_ID}",
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def headers():
+    return {"alg": "RS256", "typ": "warehouse-api-key+jwt", "kid": "current"}
+
+
+@pytest.fixture
+def sign(signing_keys, claims, headers):
+    def sign(payload=None, *, header=None, key=None):
+        return jwt.encode(
+            claims if payload is None else payload,
+            signing_keys[0] if key is None else key,
+            algorithm="RS256",
+            headers=headers if header is None else header,
+        )
+
+    return sign
+
+
+@pytest.fixture
+def expected_audience():
+    return API_AUDIENCE
+
+
+@pytest.fixture
+def verifier(signing_keys, clock, expected_audience):
+    return WarehouseJWTVerifier(
+        issuer=ISSUER,
+        audience=expected_audience,
+        keys={"current": signing_keys[0].public_key()},
     )
