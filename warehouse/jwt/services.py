@@ -115,12 +115,11 @@ class WarehouseJWTVerifierFactory:
         return DisabledJWTVerifier()
 
 
-def jwt_verifier_factory(settings, *, audience=None):
+def jwt_verifier_factory(settings):
     """Enable JWT verification when public keys are configured."""
     if "warehouse.jwt.verification_keys" not in settings:
         return DisabledJWTVerifier.create_service
-    factory = WarehouseJWTVerifierFactory(settings)
-    return factory if audience is None else factory.for_audience(audience)
+    return WarehouseJWTVerifierFactory(settings)
 
 
 def _active_jwt_conditions(token_id: UUID):

@@ -21,7 +21,7 @@ from warehouse.jwt.claims import (
     SubjectKind,
     SubjectRef,
 )
-from warehouse.jwt.interfaces import IJWTIssuer, IJWTVerifier
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTSigner, IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
 from warehouse.jwt.services import (
     DisabledJWTVerifier,
@@ -34,7 +34,8 @@ from warehouse.packaging.models import Project
 
 
 @pytest.fixture
-def issuer(db_request, pyramid_services, warehouse_jwt_settings):
+def issuer(db_request, pyramid_services, warehouse_jwt_settings, warehouse_jwt_signer):
+    pyramid_services.register_service(warehouse_jwt_signer, IJWTSigner, None)
     service = jwt_issuer_factory(warehouse_jwt_settings)(None, db_request)
     pyramid_services.register_service(service, IJWTIssuer, None)
     return service
@@ -76,7 +77,7 @@ def issue_upload_jwt(issuer, publisher):
 class TestBurnJWT:
     @pytest.fixture(autouse=True)
     def setup_verifier(self, db_request, pyramid_services, warehouse_jwt_settings):
-        verifier = jwt_verifier_factory(warehouse_jwt_settings, audience="upload")(
+        verifier = jwt_verifier_factory(warehouse_jwt_settings).for_audience("upload")(
             None, db_request
         )
         pyramid_services.register_service(verifier, IJWTVerifier, None, name="upload")
