@@ -26,8 +26,6 @@ from warehouse.accounts.services import (
 )
 from warehouse.accounts.tasks import compute_user_metrics
 from warehouse.accounts.utils import UserContext
-from warehouse.api.interfaces import IJWTVerifier
-from warehouse.api.services import DisabledJWTVerifier
 from warehouse.oidc.interfaces import SignedClaims
 from warehouse.oidc.models import OIDCPublisher
 from warehouse.oidc.utils import PublisherTokenContext
@@ -147,13 +145,14 @@ def test_includeme(config, mocker):
     macaroon_policy_cls = mocker.patch.object(
         accounts, "MacaroonSecurityPolicy", autospec=True
     )
-    jwt_policy_cls = mocker.patch.object(accounts, "JWTSecurityPolicy", autospec=True)
+    jwt_policy_cls = mocker.patch.object(
+        accounts.jwt_security_policy, "JWTSecurityPolicy", autospec=True
+    )
 
     accounts.includeme(config)
 
     assert config.register_service_factory.call_args_list == [
         mocker.call(database_login_factory, IUserService),
-        mocker.call(DisabledJWTVerifier.create_service, IJWTVerifier),
         mocker.call(
             TokenServiceFactory(name="password"), ITokenService, name="password"
         ),

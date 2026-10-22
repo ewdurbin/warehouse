@@ -16,9 +16,10 @@ or deny a request.
 - [`warehouse/accounts/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/security_policy.py): `SessionSecurityPolicy`, `BasicAuthSecurityPolicy`, and the session authorization gates (verified email, two-factor)
 - [`warehouse/accounts/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/utils.py): `UserContext`
 - [`warehouse/macaroons/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/macaroons/security_policy.py): `MacaroonSecurityPolicy` (API tokens and Trusted Publishing)
-- [`warehouse/accounts/jwt.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/jwt.py): `JWTSecurityPolicy` (JWT-backed API keys)
-- [`warehouse/api/interfaces.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/interfaces.py) and [`warehouse/api/services.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/services.py): the JWT verifier contract and its rejecting default implementation
-- [`warehouse/api/jwt.py`](https://github.com/pypi/warehouse/blob/main/warehouse/api/jwt.py): `WarehouseJWTVerifier`, the opt-in verifier for Warehouse-issued JWTs
+- [`warehouse/jwt/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/security_policy.py): `JWTSecurityPolicy` (JWT-backed API keys)
+- [`warehouse/jwt/interfaces.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/interfaces.py) and [`warehouse/jwt/services.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/services.py): the JWT verifier and registry contracts, their services, and the rejecting default verifier
+- [`warehouse/jwt/verifier.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/verifier.py): `WarehouseJWTVerifier`, the opt-in verifier for Warehouse-issued JWTs
+- [`warehouse/jwt/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/__init__.py): JWT service registration and registry cleanup scheduling
 - [`warehouse/oidc/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/oidc/utils.py): `PublisherTokenContext`
 - [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): `AuthMethodsPredicate` and the `auth_methods_for_route` helper
 - [`warehouse/routes.py`](https://github.com/pypi/warehouse/blob/main/warehouse/routes.py) and [`warehouse/forklift/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/forklift/__init__.py): route declarations tagged with `auth_methods`

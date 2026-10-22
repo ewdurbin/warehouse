@@ -23,12 +23,12 @@ from pyramid.request import Request, apply_request_extensions
 from zope.interface.verify import verifyClass
 
 from warehouse.accounts.interfaces import IUserService
-from warehouse.accounts.jwt import JWTSecurityPolicy
 from warehouse.accounts.utils import UserContext
-from warehouse.api.interfaces import IJWTVerifier
-from warehouse.api.jwt import WarehouseJWTVerifier, WarehouseJWTVerifierFactory
-from warehouse.api.services import DisabledJWTVerifier, jwt_verifier_factory
 from warehouse.authnz import Permissions
+from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.jwt.security_policy import JWTSecurityPolicy
+from warehouse.jwt.services import DisabledJWTVerifier, jwt_verifier_factory
+from warehouse.jwt.verifier import WarehouseJWTVerifier, WarehouseJWTVerifierFactory
 from warehouse.packaging.models import Project
 from warehouse.predicates import AuthMethodsPredicate, JWTAudiencePredicate
 from warehouse.routes import includeme as include_routes
@@ -225,7 +225,7 @@ class TestWarehouseJWTVerifierFactory:
 
     def test_unsupported_key_algorithm(self, jwt_settings, mocker):
         mocker.patch(
-            "warehouse.api.jwt.load_pem_public_key",
+            "warehouse.jwt.verifier.load_pem_public_key",
             side_effect=UnsupportedAlgorithm("Unsupported key algorithm"),
         )
         with pytest.raises(ConfigurationError, match="PEM public key"):
@@ -233,7 +233,7 @@ class TestWarehouseJWTVerifierFactory:
 
     def test_loads_keys_once(self, jwt_settings, mocker, clock, sign):
         load = mocker.patch(
-            "warehouse.api.jwt.load_pem_public_key",
+            "warehouse.jwt.verifier.load_pem_public_key",
             wraps=serialization.load_pem_public_key,
         )
         factory = jwt_verifier_factory(jwt_settings)
@@ -331,9 +331,8 @@ class TestAudienceJWTService:
                     auth_methods={"api-key"},
                     jwt_audience=audience_name,
                 )
-            config.register_service_factory(
-                jwt_verifier_factory(config.get_settings()), IJWTVerifier
-            )
+            config.add_directive("add_periodic_task", mocker.Mock())
+            config.include("warehouse.jwt")
             config.register_service(user_service, IUserService)
             config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
             config.commit()
@@ -759,7 +758,7 @@ class TestWarehouseJWTVerifier:
     )
     def test_operational_errors_propagate(self, verifier, sign, mocker, error):
         token = sign()
-        mocker.patch("warehouse.api.jwt.jwt.decode", side_effect=error)
+        mocker.patch("warehouse.jwt.verifier.jwt.decode", side_effect=error)
         with pytest.raises(type(error)):
             verifier.verify(token)
         with pytest.raises(type(error)):

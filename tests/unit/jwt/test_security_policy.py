@@ -12,10 +12,10 @@ from pyramid.response import Response
 from zope.interface.verify import verifyClass
 
 from warehouse.accounts.interfaces import IUserService
-from warehouse.accounts.jwt import JWTSecurityPolicy, _extract_http_jwt
 from warehouse.accounts.utils import UserContext
-from warehouse.api.interfaces import IJWTVerifier
 from warehouse.authnz import Permissions
+from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.jwt.security_policy import JWTSecurityPolicy, _extract_http_jwt
 from warehouse.predicates import AuthMethodsPredicate
 from warehouse.utils.security_policy import AuthenticationMethod, MultiSecurityPolicy
 

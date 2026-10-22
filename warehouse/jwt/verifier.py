@@ -13,9 +13,9 @@ from pyramid.exceptions import ConfigurationError
 from zope.interface import implementer
 
 from warehouse.accounts.utils import UserContext
-from warehouse.api.interfaces import IJWTVerifier
-from warehouse.api.services import DisabledJWTVerifier
 from warehouse.authnz import Permissions
+from warehouse.jwt.interfaces import IJWTVerifier
+from warehouse.jwt.services import DisabledJWTVerifier
 from warehouse.packaging.models import Project
 from warehouse.predicates import auth_methods_for_route, jwt_audience_for_route
 from warehouse.utils.security_policy import AuthenticationMethod

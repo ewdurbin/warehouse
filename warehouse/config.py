@@ -929,7 +929,7 @@ def configure(settings=None):
     # Register support for Macaroon based authentication
     config.include(".macaroons")
 
-    # Register the lifecycle registry for Warehouse-issued JWTs.
+    # Register authentication and the lifecycle registry for Warehouse-issued JWTs.
     config.include(".jwt")
 
     # Register support for OIDC based authentication

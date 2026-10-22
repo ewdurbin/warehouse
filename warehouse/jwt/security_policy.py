@@ -7,9 +7,9 @@ from zope.interface import implementer
 
 from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.utils import UserContext
-from warehouse.api.interfaces import IJWTVerifier
 from warehouse.cache.http import add_vary_callback
 from warehouse.errors import WarehouseDenied
+from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.predicates import auth_methods_for_route
 from warehouse.utils.security_policy import (
     AuthenticationMethod,

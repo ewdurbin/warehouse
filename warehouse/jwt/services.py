@@ -3,11 +3,38 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid7
 
+from pyramid.settings import asbool
 from sqlalchemy import delete, exists, select
 from zope.interface import implementer
 
-from warehouse.jwt.interfaces import IJWTRegistry
+from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
+
+
+def jwt_verifier_factory(settings):
+    """Configure the request factory once, keeping JWT authentication opt-in."""
+    if not asbool(settings.get("warehouse.jwt.enabled", False)):
+        return DisabledJWTVerifier.create_service
+
+    # Defer the verifier's account/packaging imports until configuration time.
+    from warehouse.jwt.verifier import WarehouseJWTVerifierFactory  # noqa: PLC0415
+
+    return WarehouseJWTVerifierFactory(settings)
+
+
+@implementer(IJWTVerifier)
+class DisabledJWTVerifier:
+    """Reject all JWTs while JWT authentication is disabled."""
+
+    @classmethod
+    def create_service(cls, context, request):
+        return cls()
+
+    def verify(self, token: str) -> str | None:
+        return None
+
+    def permits(self, token: str, request, context, permission) -> bool:
+        return False
 
 
 @implementer(IJWTRegistry)
