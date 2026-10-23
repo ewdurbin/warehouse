@@ -912,7 +912,7 @@ def configure(settings=None):
     # Register support for sending emails
     config.include(".email")
 
-    # Register our authentication support.
+    # Register account services and request methods.
     config.include(".accounts")
 
     # Register support for Macaroon based authentication
@@ -923,6 +923,9 @@ def configure(settings=None):
 
     # Register support for OIDC based authentication
     config.include(".oidc")
+
+    # Compose the application's security policy.
+    config.include(".authnz.security_policy")
 
     # Register support for attestations
     config.include(".attestations")

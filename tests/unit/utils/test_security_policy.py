@@ -31,12 +31,55 @@ def test_principals_for_with_none():
 class TestPermissionAllowedByAuthenticationMethod:
     @pytest.mark.parametrize(
         "permission",
+        [*Permissions, "nonexistent", pytest.param("projects:upload", id="raw-string")],
+    )
+    def test_api_key_placeholder_grants_no_permissions(self, permission):
+        assert AuthenticationMethod("api-key") is AuthenticationMethod.API_KEY
+        assert AuthenticationMethod("jwt") is AuthenticationMethod.JWT
+        assert not permission_allowed_by_authentication_method(
+            permission, AuthenticationMethod.API_KEY
+        )
+
+    @pytest.mark.parametrize(
+        "permission",
+        [
+            Permissions.ProjectsUpload,
+            Permissions.APIEcho,
+            Permissions.APIObservationsAdd,
+        ],
+    )
+    def test_jwt_allowed_permissions(self, permission):
+        assert permission_allowed_by_authentication_method(
+            permission, AuthenticationMethod.JWT
+        )
+
+    @pytest.mark.parametrize(
+        "permission",
+        [
+            permission
+            for permission in Permissions
+            if permission
+            not in {
+                Permissions.ProjectsUpload,
+                Permissions.APIEcho,
+                Permissions.APIObservationsAdd,
+            }
+        ]
+        + ["nonexistent", "projects:upload"],
+    )
+    def test_jwt_disallowed_permissions(self, permission):
+        assert not permission_allowed_by_authentication_method(
+            permission, AuthenticationMethod.JWT
+        )
+
+    @pytest.mark.parametrize(
+        "permission",
         [
             Permissions.ProjectsUpload,
             # TODO: Once the Maintainer API takes over these endpoints, move
             #       APIEcho and APIObservationsAdd to
-            #       test_macaroon_disallowed_permissions (they'll be dropped
-            #       from PERMISSION_AUTH_METHODS).
+            #       test_macaroon_disallowed_permissions (only JWT will
+            #       remain allowed for those permissions).
             Permissions.APIEcho,
             Permissions.APIObservationsAdd,
         ],
