@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
 
 from sqlalchemy import delete, exists, select
@@ -10,6 +10,7 @@ from zope.interface import implementer
 from warehouse.jwt.claims import VerifiedJWT
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
+from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
 
 
 @implementer(IJWTVerifier)
@@ -83,9 +84,11 @@ class DatabaseJWTRegistry:
         )
 
     def delete_expired(self) -> int:
+        # Allow for bounded clock skew between cleanup workers and verifiers.
+        cutoff = datetime.now(UTC) - timedelta(seconds=MAX_LIFETIME_SECONDS)
         result = self.db.execute(
             delete(IssuedJWT)
-            .where(IssuedJWT.expires_at <= datetime.now(UTC))
+            .where(IssuedJWT.expires_at <= cutoff)
             .execution_options(synchronize_session=False)
         )
         return result.rowcount

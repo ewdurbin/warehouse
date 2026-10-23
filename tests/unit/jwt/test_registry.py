@@ -14,6 +14,7 @@ from zope.interface.verify import verifyClass
 
 from warehouse.jwt.interfaces import IJWTRegistry
 from warehouse.jwt.models import IssuedJWT
+from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
 from warehouse.jwt.services import (
     DatabaseJWTRegistry,
 )
@@ -179,15 +180,20 @@ class TestDatabaseJWTRegistry:
 
     def test_delete_expired(self, jwt_registry, db_session, clock):
         now = datetime.now(UTC)
-        expired = jwt_registry.register(now + timedelta(seconds=1))
-        boundary = jwt_registry.register(now + timedelta(seconds=2))
-        active = jwt_registry.register(now + timedelta(seconds=3))
-        clock.tick(timedelta(seconds=2))
+        max_lifetime = timedelta(seconds=MAX_LIFETIME_SECONDS)
+        eligible = jwt_registry.register(now + max_lifetime - timedelta(seconds=1))
+        boundary = jwt_registry.register(now + max_lifetime)
+        clock.tick(2 * max_lifetime - timedelta(seconds=1))
+        active = jwt_registry.register(datetime.now(UTC) + max_lifetime)
 
-        assert jwt_registry.delete_expired() == 2
-        assert db_session.get(IssuedJWT, expired) is None
-        assert db_session.get(IssuedJWT, boundary) is None
+        assert jwt_registry.delete_expired() == 1
+        assert db_session.get(IssuedJWT, eligible) is None
+        assert db_session.get(IssuedJWT, boundary) is not None
+        assert not jwt_registry.is_active(boundary)
+        assert jwt_registry.get_active(boundary) is None
         assert jwt_registry.is_active(active)
+        clock.tick(timedelta(seconds=1))
+        assert jwt_registry.delete_expired() == 1
         assert jwt_registry.delete_expired() == 0
 
     @pytest.mark.parametrize(

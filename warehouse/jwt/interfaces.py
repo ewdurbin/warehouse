@@ -75,4 +75,7 @@ class IJWTRegistry(Interface):
         """Delete the ID; missing IDs are harmless. Callers authorize revocation."""
 
     def delete_expired() -> int:
-        """Delete expired entries and return their count; never extend validity."""
+        """Delete entries one maximum token lifetime past expiry; return their count.
+
+        The grace period does not extend token validity.
+        """
