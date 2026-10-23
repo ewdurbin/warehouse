@@ -4,6 +4,7 @@ import http
 import time
 
 from datetime import datetime
+from enum import StrEnum
 from typing import TypedDict, cast
 
 import jwt
@@ -16,13 +17,19 @@ from pyramid.view import view_config
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from warehouse.authnz import Permissions
 from warehouse.email import (
     send_environment_ignored_in_trusted_publisher_email,
     send_pending_trusted_publisher_reified_email,
 )
 from warehouse.events.tags import EventTag
-from warehouse.jwt.claims import SubjectKind
-from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
+from warehouse.jwt.claims import (
+    AuthorizationDetail,
+    AuthorizationType,
+    SubjectKind,
+    SubjectRef,
+)
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTVerifier
 from warehouse.macaroons import InvalidMacaroonError, caveats
 from warehouse.macaroons.interfaces import IMacaroonService
 from warehouse.macaroons.models import Macaroon
@@ -59,8 +66,14 @@ class JsonResponse(TypedDict, total=False):
     success: bool | None
 
 
+class TokenFormat(StrEnum):
+    MACAROON = "macaroon"
+    JWT = "jwt"
+
+
 class TokenPayload(BaseModel):
     token: StrictStr
+    token_format: TokenFormat = TokenFormat.MACAROON
 
 
 def _ratelimiters(request: Request) -> dict[str, IRateLimiter]:
@@ -189,7 +202,13 @@ def mint_token_from_oidc(request: Request):
         IOIDCPublisherService, name=service_name
     )
 
-    return mint_token(oidc_service, unverified_jwt, unverified_issuer, request)
+    return mint_token(
+        oidc_service,
+        unverified_jwt,
+        unverified_issuer,
+        request,
+        token_format=payload.token_format,
+    )
 
 
 def mint_token(
@@ -197,7 +216,25 @@ def mint_token(
     unverified_jwt: str,
     unverified_issuer: str,
     request: Request,
+    *,
+    token_format: TokenFormat = TokenFormat.MACAROON,
 ) -> JsonResponse:
+    jwt_issuer = None
+    if token_format == TokenFormat.JWT:
+        jwt_issuer = request.find_service(IJWTIssuer, context=None)
+        # Check availability before reifying a pending publisher or consuming
+        # the upstream assertion's JTI, if present. Never silently downgrade.
+        if not jwt_issuer.enabled:
+            return _invalid(
+                errors=[
+                    {
+                        "code": "not-enabled",
+                        "description": "JWT issuance is disabled",
+                    }
+                ],
+                request=request,
+            )
+
     claims = oidc_service.verify_jwt_signature(unverified_jwt, unverified_issuer)
     if not claims:
         return _invalid(
@@ -302,7 +339,7 @@ def mint_token(
 
     # We either don't have a pending OIDC publisher, or we *did*
     # have one and we've just converted it. Either way, look for a full publisher
-    # to actually do the macaroon minting with.
+    # to actually do the token minting with.
     try:
         publisher = oidc_service.find_publisher(claims, pending=False)
         # NOTE: assert to persuade mypy of the correct type here.
@@ -328,9 +365,8 @@ def mint_token(
             request=request,
         )
 
-    # Atomically claim the JTI before minting a macaroon. The SET NX ensures
-    # that only one request can proceed for a given JTI.
-    # Of note, exp is coming from a verified JWT here, so we don't validate it.
+    # If present, atomically claim the JTI before minting. SET NX allows only
+    # one request per JTI. The expiration comes from the verified assertion.
     if jwt_identifier := claims.get("jti"):
         expiration = cast(int, claims.get("exp"))
         if not oidc_service.store_jwt_identifier(jwt_identifier, expiration):
@@ -344,31 +380,41 @@ def mint_token(
                 request=request,
             )
 
-    # At this point, we've verified that the given JWT is valid for the given
-    # project. All we need to do is mint a new token.
-    # NOTE: For OIDC-minted API tokens, the Macaroon's description string
-    # is purely an implementation detail and is not displayed to the user.
-    macaroon_service: DatabaseMacaroonService = request.find_service(
-        IMacaroonService, context=None
-    )
-    not_before = int(time.time())
-    expires_at = not_before + 900
-    serialized, _dm = macaroon_service.create_macaroon(
-        request.domain,
-        (
-            f"OpenID token: {publisher!s} "
-            f"({datetime.fromtimestamp(not_before).isoformat()})"
-        ),
-        [
-            caveats.OIDCPublisher(
-                oidc_publisher_id=str(publisher.id),
+    # The assertion identifies a publisher; issue the requested credential.
+    if jwt_issuer is not None:
+        issued = jwt_issuer.issue(
+            subject=SubjectRef(SubjectKind.PUBLISHER, publisher.id),
+            audience="upload",
+            authorization_details=(
+                AuthorizationDetail(
+                    AuthorizationType.WAREHOUSE, (Permissions.ProjectsUpload,)
+                ),
             ),
-            caveats.ProjectID(project_ids=[str(p.id) for p in publisher.projects]),
-            caveats.Expiration(expires_at=expires_at, not_before=not_before),
-        ],
-        oidc_publisher_id=str(publisher.id),
-        additional={"oidc": publisher.stored_claims(claims)},
-    )
+            additional={"oidc": publisher.stored_claims(claims)},
+        )
+        serialized = issued.token
+        expires_at = int(issued.expires_at.timestamp())
+    else:
+        # This description is internal and is not displayed to the user.
+        macaroon_service: DatabaseMacaroonService = request.find_service(
+            IMacaroonService, context=None
+        )
+        not_before = int(time.time())
+        expires_at = not_before + 900
+        serialized, _dm = macaroon_service.create_macaroon(
+            request.domain,
+            (
+                f"OpenID token: {publisher!s} "
+                f"({datetime.fromtimestamp(not_before).isoformat()})"
+            ),
+            [
+                caveats.OIDCPublisher(oidc_publisher_id=str(publisher.id)),
+                caveats.ProjectID(project_ids=[str(p.id) for p in publisher.projects]),
+                caveats.Expiration(expires_at=expires_at, not_before=not_before),
+            ],
+            oidc_publisher_id=str(publisher.id),
+            additional={"oidc": publisher.stored_claims(claims)},
+        )
 
     # Loading `publisher.projects` back-populates `Project.oidc_publishers`,
     # which marks each project as dirty. At flush time, the cache-purge
