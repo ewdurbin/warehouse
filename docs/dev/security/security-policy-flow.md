@@ -16,9 +16,12 @@ authorization details) combine to allow or deny a request.
 - [`warehouse/accounts/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/security_policy.py): `SessionSecurityPolicy`, `BasicAuthSecurityPolicy`, and the session authorization gates (verified email, two-factor)
 - [`warehouse/accounts/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/utils.py): `UserContext`
 - [`warehouse/macaroons/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/macaroons/security_policy.py): `MacaroonSecurityPolicy` (API tokens and Trusted Publishing)
-- [`warehouse/jwt/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/security_policy.py) implements JWT authentication and permission checks.
+- [`warehouse/jwt/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/security_policy.py): JWT authentication and permission checks
+- [`warehouse/jwt/verifier.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/verifier.py): token verification
+- [`warehouse/jwt/services.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/services.py): route audience selection, the issued-token registry, and default services
+- [`warehouse/jwt/issuer.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/issuer.py) and [`warehouse/jwt/signing.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/signing.py): token issuance and KMS signing
 - [`warehouse/oidc/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/oidc/utils.py): `PublisherTokenContext`
-- [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): `AuthMethodsPredicate` and the `auth_methods_for_route` helper
+- [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): route metadata and helpers for `auth_methods` and `jwt_audience`
 - [`warehouse/routes.py`](https://github.com/pypi/warehouse/blob/main/warehouse/routes.py) and [`warehouse/forklift/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/forklift/__init__.py): route declarations tagged with `auth_methods`
 - [`warehouse/config.py`](https://github.com/pypi/warehouse/blob/main/warehouse/config.py): `RootFactory` (the default context and the root ACL)
 - [`warehouse/utils/wsgi.py`](https://github.com/pypi/warehouse/blob/main/warehouse/utils/wsgi.py): `ProxyFixer` (trusted client IP) and `VhmRootRemover` WSGI middleware
@@ -52,9 +55,10 @@ middleware that runs before the router and establishes the trusted
 refuses to authenticate a banned IP, so that ban check is only as trustworthy
 as `ProxyFixer`.
 
-Authentication and authorization themselves **are not middleware**. They run
-*inside* the router, after the route and the context resource have been
-resolved, and only when a view declares a `permission`.
+Authentication and authorization are not middleware. Permission checks run
+inside the router after route matching and traversal, before a view declaring a
+`permission` executes. Other code can also access `request.identity` directly,
+including on routes without a view permission.
 
 ```mermaid
 flowchart TD
@@ -206,7 +210,7 @@ Listing `basic-auth` without `macaroon` raises a `ConfigurationError`, since
 the only credential basic-auth lets through is a macaroon.
 
 Each policy consults the predicate during `identity()`. JWT authentication also
-requires a route audience and configured verification keys.
+requires a route audience and [configured verification keys](#jwt-configuration).
 
 | Route declares | Session engages? | BasicAuth engages? | Macaroon engages? | JWT engages? |
 |----------------|------------------|--------------------|-------------------|--------------|
@@ -218,16 +222,17 @@ requires a route audience and configured verification keys.
 
 `auth_methods_for_route` returns `None` when a route carries no predicate, and
 each policy decides its own default for that case. `SessionSecurityPolicy` and
-`MacaroonSecurityPolicy` still engage on un-tagged routes; `BasicAuthSecurityPolicy`
-only engages when a route explicitly lists `basic-auth`.
+`MacaroonSecurityPolicy` still engage on un-tagged routes, although the session
+policy skips routes named `api.*`. `BasicAuthSecurityPolicy` only engages when a
+route explicitly lists `basic-auth`.
 
 ## 4. Authentication: resolving `request.identity`
 
 Every policy's `identity()` registers a `Vary` response callback (on `Cookie`
-for sessions and `Authorization` for the header-based policies) so caches
-separate responses by credential. The session, basic auth, and macaroon
-policies set `request.authentication_method` on entry. The JWT policy sets it
-after resolving a live identity.
+for sessions, `Authorization` for the header-based policies) so caches don't
+serve one user's response to another. Session, BasicAuth, and Macaroon stamp
+`request.authentication_method` up front. JWT stamps `JWT` only after
+verification, the registry check, and subject resolution succeed.
 
 ### 4a. `SessionSecurityPolicy`
 
@@ -324,12 +329,30 @@ signature, and maps to a live principal. It does not yet verify the macaroon's
 caveats. That happens in `permits()`, because caveat verification depends on
 the specific context and permission being requested.
 
+### 4d. `JWTSecurityPolicy`
+
+The policy reads `Authorization: Bearer <token>` on routes that allow `jwt`.
+It leaves `pypi-` Bearer credentials to the macaroon policy. It caches the
+credential so authentication and authorization use the same token.
+
+1. `IJWTVerifier.verify` checks the signature and the [token profile](#jwt-profile).
+   It returns immutable `VerifiedJWT` claims, or `None` for an invalid token.
+2. `IJWTRegistry.get_active` loads the unexpired registry entry for the token's
+   `jti`. A missing entry ends authentication. Database failures propagate.
+3. The policy looks up the named subject kind and UUID. An enabled user yields
+   a `UserContext`. An existing OIDC publisher yields a `PublisherTokenContext`
+   with any upstream claims stored in `additional["oidc"]`. Warehouse exposes
+   those claims as `request.oidc_claims`, for example to link upload history to
+   a specific commit.
+
+JWTs use the `JWT` authentication method. `API_KEY` is reserved for future use.
+
 ## 5. Authorization: how `permits` decides
 
 Once an identity exists and the requested permission is known, the producing
 policy's `permits()` runs. The session, macaroon, and JWT policies consult the
-same ACL machinery (`pyramid.authorization.ACLHelper`). Each policy adds its
-own checks.
+same ACL machinery (`pyramid.authorization.ACLHelper`), with different gates.
+BasicAuth never produces an identity and therefore does not authorize requests.
 
 ### Principals and the ACL
 
@@ -420,6 +443,20 @@ The macaroon `verify` is where Trusted Publishing caveats and project-scoped
 token caveats are enforced, distinct from the ACL question of "does this
 principal have this permission on this object".
 
+### 5c. JWT authorization
+
+`JWTSecurityPolicy.permits` checks the following in order:
+
+1. The requested permission allows `JWT` in `PERMISSION_AUTH_METHODS`.
+2. The original token still verifies, and its registry entry is still active.
+3. The token's subject kind and UUID match the request identity. At least one
+   authorization detail covers both the requested permission and the resource.
+4. The resource ACL allows the action for the identity's principals.
+
+The policy repeats the token and registry checks even when it has cached the
+identity. A later check can deny an expired token or see a revocation committed
+before its registry query. Work that already passed authorization can continue.
+
 ## 6. Two end-to-end examples
 
 ### Browser managing a project
@@ -458,7 +495,7 @@ sequenceDiagram
     participant DB as Database
 
     T->>R: POST upload (Basic __token__:pypi-AgE...)
-    R->>R: route match (forklift.legacy.file_upload,<br/>auth_methods = basic-auth, macaroon)
+    R->>R: route match (forklift.legacy.file_upload,<br/>auth_methods = basic-auth, macaroon, jwt)
     R->>M: permits(request, context, ProjectsUpload)
     M->>BA: identity(request)
     BA-->>M: None (username is __token__, passes through)
@@ -482,7 +519,7 @@ sequenceDiagram
 | `MultiSecurityPolicy` | Tries policies in order, caches `(identity, policy)`, delegates `permits` |
 | `UserContext` | A `User` plus an optional `Macaroon`; sessions and user-backed JWTs have `macaroon=None` |
 | `PublisherTokenContext` | An OIDC publisher plus optional stored upstream claims (Trusted Publishing) |
-| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `JWT`, `API_KEY` (placeholder) |
+| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `JWT` (verifier disabled by default), `API_KEY` (unimplemented placeholder) |
 | `AuthMethodsPredicate` | Storage-only route tag listing which methods may authenticate the route |
 | `PERMISSION_AUTH_METHODS` | Which auth methods may grant which permissions (default: session-only) |
 | `WarehouseDenied` | A `Denied` subclass carrying a human message and a machine `reason` |
@@ -490,111 +527,208 @@ sequenceDiagram
 
 ## 8. Things worth remembering
 
-- Authentication and authorization run inside the router, after route matching
-  and traversal, and only for views that declare a `permission`. There is no
-  authentication middleware.
+- Permission checks run inside the router, after route matching and traversal,
+  before views that declare a `permission`. Code can also access identity on
+  routes without a view permission. There is no authentication middleware.
 - `identity()` proves *who* you are; `permits()` proves *what you may do*. For
   macaroons the split is sharper: existence and signature are checked in
   `identity()`, while caveats are checked in `permits()`.
 - The same policy that authenticates a request authorizes it. The cached
   `(identity, policy)` pair plus the `request.identity == identity` assertion
   guard against confused-deputy mistakes.
-- Route `auth_methods` is the lever for keeping browser, password, and token
-  auth from bleeding across surfaces. Adding a new authenticated API surface
-  means a new `AuthenticationMethod` and a `PERMISSION_AUTH_METHODS` entry, not
-  a new `MACAROON` grant.
+- Route `auth_methods` controls which authentication methods can engage. JWT
+  routes also declare `jwt_audience`; permissions must allow JWT in
+  `PERMISSION_AUTH_METHODS`.
 - The session path layers verified-email and two-factor gates on top of the
   ACL; the macaroon path layers the permission/method gate and caveat
   verification. Both can only turn an ACL `Allowed` into a denial, never widen
   it.
 
-## Warehouse JWT profile
+## Warehouse-issued JWTs
 
-`warehouse.jwt` defines the JWT profile and verifier interface. The default
-verifier rejects all tokens.
+### JWT profile
 
-The wire profile uses `RS256`, the `pypi-access+jwt` type, canonical UUID
-subjects/JTIs, and at most five minutes between issuance and expiration.
-User and publisher subjects are explicitly distinguished. Authorization uses
-RFC 9396-based `authorization_details` with `type="warehouse"` and an explicit
-`actions` list. An optional `identifier="project:<UUID>"` narrows upload or
-observation permissions to a project; omission means no token-level resource
-restriction. Invalid or unknown restrictions must fail closed.
+Warehouse verifies tokens locally with configured RSA public keys. It checks
+these headers and claims:
 
-Verification alone never establishes live identity, registry liveness, or
-authorization. Callers must also enforce credential-method boundaries and live
-resource ACLs; observation reporting still requires observer privileges.
+| Field | Requirement |
+| --- | --- |
+| JOSE header | Exactly `alg`, `typ`, and `kid`. Use `RS256`, `pypi-access+jwt`, and the ID of a configured RSA public key of at least 2048 bits. |
+| `iss`, `aud` | Exact matches for the configured issuer and audience. `aud` must be a single string. |
+| `sub`, `subject_kind` | A canonical Warehouse UUID and either `user` or `publisher`. |
+| `jti` | A canonical UUID. The registry generates UUIDv7 IDs at issuance. |
+| `iat`, `exp`, optional `nbf` | Integer Unix timestamps in seconds. Warehouse rejects future `iat` or `nbf` values and expired tokens, with zero clock tolerance. `exp - iat` must be between 1 and 300 seconds inclusive. |
+| `authorization_details` | A nonempty array of the objects described below. |
 
-`WarehouseJWTVerifier` checks signatures with configured RSA public keys of at
-least 2048 bits and requires an exact issuer and audience. It rejects unsupported
-headers and claims, and invalid token lifetimes. It checks that the compact token
-is unpadded ASCII and at most 8 KiB before parsing it.
+Before parsing, Warehouse checks that the compact token is unpadded ASCII and at
+most 8 KiB.
 
-JWT registry entries contain a UUIDv7 JTI, indexed UTC expiration, and
-registry-only `additional` metadata. Registration, fresh liveness queries, and
-revocation participate in the caller's transaction. Missing, expired, or deleted
-rows never establish a live credential; database errors propagate. Metadata
-cannot override signed claims or grant permissions.
+Warehouse rejects extra headers and claims, including keys or key URLs supplied
+by the token. The type identifies PyPI access tokens. The issuer and audience
+identify where a token is accepted.
 
-An hourly task deletes entries at least one maximum token lifetime after they
-expire. For a five-minute token, cleanup can occur ten minutes after issuance
-or later. Expiration is enforced on every liveness query, regardless of cleanup.
+#### Authorization details
 
-The authorization adapter binds the verified subject kind and UUID to the
-resolved user or publisher context. It matches each permission to its own
-optional project restriction without mixing actions from different details.
-Permission-wide grants do not bypass project context requirements or live ACLs.
-Unsupported identity kinds, permissions, and contexts are rejected.
+Warehouse uses the JWT claim from [RFC 9396, section 9.1](https://www.rfc-editor.org/rfc/rfc9396.html#section-9.1)
+with its own allowed values:
 
-`JWTSecurityPolicy` accepts Bearer credentials on routes that explicitly allow
-JWT authentication. It verifies the token and registry entry before resolving the
-user or publisher. Authorization rechecks the token, registry, subject,
-authorization details, and live ACL. JWTs are not accepted via Basic or Token
-headers. `API_KEY` remains an unimplemented placeholder, and the default JWT
-verifier rejects all tokens.
+- `type` must be `"warehouse"`.
+- `actions` must contain at least one permission. Supported values are
+  `projects:upload`, `api:observations:add`, and `api:echo`.
+- `identifier` is optional. Use `"project:<canonical UUID>"` to restrict all
+  actions in that object to one project. Only uploads and observations support
+  this restriction. Omit the field to leave the project unrestricted by the
+  token.
 
-Supplying `JWT_VERIFICATION_KEYS` enables verification. Warehouse requires
-a nonempty mapping of key IDs to public PEMs, an exact issuer, and distinct
-upload and API audiences. Invalid or incomplete verification configuration fails
-at startup. Without the key setting, Warehouse uses the rejecting verifier.
-Each route must opt in to JWT authentication and declare a `jwt_audience`.
-That declaration selects the expected audience for the request.
+An invalid object, including an unknown field or a null or malformed identifier,
+invalidates the entire token. Only project identifiers are supported.
 
-The `IJWTSigner` contract signs server-selected claims using the Warehouse access
-token profile. `KMSJWTSignerService` is the production implementation: it requires
-an RSA `SIGN_VERIFY` KMS key, `JWT_SIGNING_KEY_ID`, and a matching public key in
-`JWT_VERIFICATION_KEYS`. `JWT_KMS_KEY_ID` may identify the key by ID, ARN, or alias.
-The workload needs `kms:GetPublicKey` and `kms:Sign` on that key. At startup, the
-signer checks the configured public key and pins the immutable KMS key ARN. Each
-signature uses `RSASSA_PKCS1_V1_5_SHA_256`; the private key never enters Warehouse.
-Verification remains local. `TestJWTSignerService` signs with an ephemeral key in
-tests and cannot be selected by deployment configuration.
+Each object grants its actions independently. List projects in separate objects
+to grant the same action on several projects. For project actions, omitting
+the identifier covers every project the ACL allows.
 
-For a rolling rotation, publish the new public key under a new JWT key ID and
-reload all verifiers with both keys. Then deploy the new `JWT_SIGNING_KEY_ID`
-and set `JWT_KMS_KEY_ID` to the new key's ARN or an alias dedicated to that key.
-If a shared alias moves, an issuer that restarts with the old key ID will fail
-the public key check. Once the last issuer stops using the old key, keep its
-public key until all tokens it signed have expired.
+For example, an upload token can allow two specific projects:
 
-The upload route uses the upload audience. The echo and observation routes use
-the API audience; observation authorization still requires observer privileges.
+```json
+{
+  "authorization_details": [
+    {
+      "type": "warehouse",
+      "actions": ["projects:upload"],
+      "identifier": "project:95ea64e2-764c-4320-a4e5-991df49f261f"
+    },
+    {
+      "type": "warehouse",
+      "actions": ["projects:upload"],
+      "identifier": "project:c024d4a7-807f-4b5d-abab-b02bf3f3f80c"
+    }
+  ]
+}
+```
 
-`IJWTIssuer` validates the profile, registers the ID and server-only metadata in
-the caller's transaction, and delegates signing to `IJWTSigner`. The caller must
-commit the transaction. Configuring both signing IDs enables issuance. Supplying
-only one fails startup. With neither ID, Warehouse can verify tokens using public
-keys alone.
+An API token for observations on any project can use
+`{"type": "warehouse", "actions": ["api:observations:add"]}` as its sole
+authorization detail.
 
-The existing Trusted Publishing burn endpoint also accepts publisher JWTs. A named
-upload verifier fixes the expected audience independently of route metadata.
-Only a valid publisher credential can revoke its own active registry entry, even
-if the publisher has since been deleted. The endpoint keeps its non-enumerating
-202 response, its existing macaroon behavior, and request-owned transactions.
+Uploads and observations require an existing `Project` context and the relevant
+ACL permissions. Reporting an observation requires observer privileges.
+Warehouse's OIDC exchange omits `identifier` for uploads, so each upload uses
+the publisher's current project associations. The token stays the same size
+regardless of how many projects the publisher can access.
 
-The OIDC exchange accepts `token_format: "jwt"` as an opt-in; omitted format or
-`"macaroon"` preserves existing issuance. With the real OIDC backend, Warehouse
-rejects reused assertions that contain a `jti`; assertions without one do not
-receive replay protection. Warehouse chooses the publisher subject, upload
-audience, upload authorization detail, and five-minute lifetime. OIDC provenance
-stays in registry metadata, and pending publishers are supported.
+### JWT configuration
+
+Set `JWT_VERIFICATION_KEYS` to enable verification. Without it, Warehouse uses
+`DisabledJWTVerifier`, which rejects every JWT.
+
+| Environment variable | Setting | Value |
+| --- | --- | --- |
+| `JWT_ISSUER` | `warehouse.jwt.issuer` | Expected `iss` value for this environment |
+| `JWT_UPLOAD_AUDIENCE` | `warehouse.jwt.upload_audience` | Expected `aud` value for uploads |
+| `JWT_API_AUDIENCE` | `warehouse.jwt.api_audience` | Expected `aud` value for the API, distinct from the upload audience |
+| `JWT_VERIFICATION_KEYS` | `warehouse.jwt.verification_keys` | JSON object mapping JWT key IDs to PEM-encoded RSA public keys |
+| `JWT_SIGNING_KEY_ID` | `warehouse.jwt.signing_key_id` | Key ID to put in the JWT header. It must appear in the verification key mapping. |
+| `JWT_KMS_KEY_ID` | `warehouse.jwt.kms_key_id` | AWS KMS key ID, ARN, or alias for an RSA `SIGN_VERIFY` key |
+
+Warehouse validates the issuer, audiences, and public keys at startup. Use
+separate issuers, audience values, and keys for each environment. Reload
+Warehouse after changing these settings. For incoming Trusted Publishing
+assertions, set the upstream audience separately with `OIDC_AUDIENCE`.
+
+A route that accepts JWTs declares both `auth_methods` and `jwt_audience`:
+
+```python
+config.add_route(
+    "api.echo",
+    "/danger-api/echo",
+    auth_methods={"macaroon", "jwt"},
+    jwt_audience="api",
+)
+```
+
+Once Pyramid matches a route, the verifier uses that route's `jwt_audience`
+label to select the configured audience. The label is metadata only.
+
+| Route | `jwt_audience` |
+| --- | --- |
+| `forklift.legacy.file_upload` | `"upload"` |
+| `api.echo` | `"api"` |
+| `api.projects.observations` | `"api"` |
+
+### Issued-token registry
+
+The `issued_jwts` table stores the UUIDv7 token ID, an indexed `expires_at`,
+and an `additional` JSONB object for metadata, which defaults to `{}`.
+`get_active` returns the entry and its metadata. `is_active` checks for an
+unexpired entry. Both query PostgreSQL so they can see committed revocations.
+To revoke a token, delete its row.
+
+Issuing code can store data such as filtered OIDC claims in
+`additional["oidc"]`. Use this data for provenance, such as upload history.
+Permissions come from signed claims and the ACL. Persist any data needed
+after the registry entry is deleted in the relevant upload or event record.
+
+The hourly cleanup task deletes rows at least five minutes after expiration.
+A five-minute token therefore expires five minutes after issuance and becomes
+eligible for cleanup after ten minutes.
+
+### JWT signing and rotation
+
+Set both `JWT_SIGNING_KEY_ID` and `JWT_KMS_KEY_ID` to enable issuance. At
+startup, Warehouse calls `kms:GetPublicKey`, checks that the returned key matches
+the configured public key for the JWT key ID, and pins the KMS key ARN. With
+both settings omitted, Warehouse uses `DisabledJWTIssuer` and can verify
+tokens without contacting KMS.
+
+The caller of `IJWTIssuer` authorizes issuance and chooses the subject, audience
+label, and authorization details. It can also supply registry metadata and a
+lifetime of 1–300 seconds (default 300). The issuer validates the claims,
+registers the token ID, and passes the claims to `IJWTSigner`. The issuer rejects
+signed tokens over 8 KiB. The token and its row use the same expiration. The
+issuer returns the token, ID, and expiration in `SignedJWT`. The caller owns the
+transaction and must commit the registry write before handing out the token.
+
+The production signer uses the AWS SDK credential chain and configured region.
+Give the issuing workload `kms:GetPublicKey` and `kms:Sign` on the chosen RSA
+`SIGN_VERIFY` key. KMS holds the private key and signs a SHA-256 digest using
+`RSASSA_PKCS1_V1_5_SHA_256`. Signing errors fail issuance. Development uses the
+[Compose KMS emulator](../development/getting-started.md#local-jwt-signing).
+Tests use a test-only signer with its own RSA key.
+
+To rotate without interrupting verification:
+
+1. Create a new RSA `SIGN_VERIFY` key. Grant the issuing workload access and
+   fetch the public key.
+2. Add the new public key under a new JWT key ID in `JWT_VERIFICATION_KEYS` and
+   reload all verifiers. Keep the old public key.
+3. Deploy the new `JWT_SIGNING_KEY_ID` and set `JWT_KMS_KEY_ID` to the new key's
+   ARN or an alias dedicated to that key. Running issuers use the ARN resolved
+   at startup. If a shared alias moves, an issuer that restarts with the old
+   key ID will fail the public key check.
+4. After the last issuer stops using the old key, wait at least five minutes
+   plus a margin for deployment and clock differences. Remove the old public
+   key and signing permissions, then reload the verifiers.
+
+If a key is compromised, remove its public key from every verifier's
+configuration. In the same rollout, switch issuers using that key to a
+configured replacement or unset both `JWT_SIGNING_KEY_ID` and `JWT_KMS_KEY_ID`.
+If no verification keys remain, unset `JWT_VERIFICATION_KEYS`. Tokens signed
+with the compromised key stop verifying as each verifier reloads.
+
+### Trusted Publisher exchange and revocation
+
+The [trial guide](../development/trusted-publisher-jwt-trial.md) shows how clients
+request, use, and burn an upload JWT. A pending publisher can create the
+project during exchange. Uploading with a JWT requires an existing project.
+
+With the real OIDC backend, Warehouse verifies the provider's assertion and
+resolves the publisher before issuing either a JWT or a macaroon. Warehouse
+also records the upstream assertion's `jti` when present to prevent replay.
+Request a fresh assertion after a signing failure, since Warehouse may already
+have recorded the previous identifier.
+
+For burn requests, Warehouse selects the upload verifier explicitly. It checks
+the token in the JSON body, requires an unexpired publisher JWT with an active
+entry, then deletes that entry. The JWT can revoke itself even after its
+publisher has been deleted. The request transaction includes the deletion and
+any project history events.
