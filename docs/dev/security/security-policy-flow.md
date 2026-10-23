@@ -504,9 +504,8 @@ sequenceDiagram
 
 ## Warehouse JWT profile
 
-The JWT foundation lives in `warehouse.jwt`. It does not activate authentication.
-`IJWTVerifier` returns immutable verified claims or `None`; the default
-`DisabledJWTVerifier` rejects every credential.
+`warehouse.jwt` defines the JWT profile and verifier interface. The default
+verifier rejects all tokens.
 
 The wire profile uses `RS256`, the `pypi-access+jwt` type, canonical UUID
 subjects/JTIs, and at most five minutes between issuance and expiration.

@@ -7,26 +7,19 @@ from warehouse.jwt.claims import VerifiedJWT
 
 class IJWTVerifier(Interface):
     def verify(token: str) -> VerifiedJWT | None:
-        """Validate a JWT and return normalized, immutable verified claims.
+        """Verify the token and return its immutable claims.
 
-        Implementations must validate the signature, configured algorithm and
-        issuer/key binding, audience, token purpose, required claims, and time
-        bounds. Subject kinds and authorization details types, actions, and
-        identifiers must be explicitly supported by the token profile. Unknown
-        claims or restrictions must fail closed, never be ignored. An absent
-        identifier means no token-level resource narrowing in the Warehouse
-        profile; an invalid identifier must not be treated as absent.
-        An unverified subject must never be resolved as an identity. Invalid
-        credentials return None; infrastructure and configuration failures raise.
+        Use the configured issuer, audience, algorithm, and public keys. Check
+        the signature, token type, required claims, and validity window. Reject
+        unknown claims and unsupported subjects or authorization details. An
+        omitted identifier leaves the resource unrestricted by the token.
+        An invalid identifier invalidates the token.
 
-        Bind the service to its intended recipient using trusted server-side
-        route configuration. Token claims must not select the expected issuer
-        or audience.
+        Return None for invalid tokens. Raise on configuration or service errors.
 
-        This performs no database lookups or resource authorization. Callers must
-        check registry liveness, resolve the typed subject and its current status,
-        and enforce authorization details, the method allowlist, and live ACLs.
-        Reverify and recheck registry liveness at authorization time, even when
-        request identity is cached; the resolved identity must still match the
-        verified subject kind and ID.
+        After verification, the caller checks the registry and resolves the
+        subject. At authorization time, the caller verifies the token and checks
+        the registry again, even with a cached identity. The caller also checks
+        the subject against that identity, the allowed authentication methods,
+        the authorization details, and the resource ACL.
         """

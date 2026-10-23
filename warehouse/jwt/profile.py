@@ -48,8 +48,7 @@ def valid_authorization_details(details) -> bool:
         ):
             return False
         if "identifier" in detail:
-            # Only absence means unrestricted by resource. Invalid restrictions
-            # must never silently broaden a token at issuance or verification.
+            # Only an omitted identifier leaves the resource unrestricted.
             identifier = detail["identifier"]
             if not isinstance(identifier, str):
                 return False
