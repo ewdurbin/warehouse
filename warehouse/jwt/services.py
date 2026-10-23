@@ -96,7 +96,7 @@ class DatabaseJWTRegistry:
 
 
 def jwt_verifier_factory(settings):
-    """Configure the request factory once, keeping JWT authentication opt-in."""
+    """Select the JWT verifier factory from trusted settings."""
     if not asbool(settings.get("warehouse.jwt.enabled", False)):
         return DisabledJWTVerifier.create_service
 
