@@ -1,10 +1,9 @@
 # Trusted Publisher JWT trial
 
-This is an opt-in developer trial, not an announcement of availability on PyPI.
-JWT verification and issuance remain **disabled by default**. Existing clients
-continue to receive macaroons unless they explicitly request `"token_format": "jwt"`.
-The trial issues only publisher-backed upload credentials, not user credentials
-or danger-API credentials.
+This guide covers the opt-in Trusted Publisher JWT trial. Verification and
+issuance are **disabled by default**. The exchange continues to issue macaroons
+unless a client requests `"token_format": "jwt"`. Trial JWTs authorize
+publisher-backed uploads.
 
 ## Run the local integration tests
 
@@ -14,18 +13,14 @@ With the [Compose development setup](getting-started.md) built, run:
 make tests T=tests/functional/forklift/test_jwt.py
 ```
 
-This uses a temporary **test database on Compose's PostgreSQL service**, not the
-development database. It does not change your web server's configuration or
-require a signing key in `.env`. The tests generate separate ephemeral RSA keys
-for the upstream OIDC assertion and Warehouse-issued JWT, exercise real signature
-and publisher-claim verification, and replace upstream key discovery and the
-OIDC replay cache with local test doubles. Attestation tests use the existing
-development integrity service; they test provenance plumbing, not attestation
-signature verification.
+Tests use a temporary database on Compose's PostgreSQL service and verify
+signatures with separate RSA keys for upstream assertions and Warehouse JWTs.
+They use local test doubles for provider key discovery and the replay cache.
+Attestation tests exercise provenance without verifying attestation signatures.
 
-The tests cover exchange, Bearer upload, pending publishers, upload history,
-provenance, live multi-project access, self-revocation, expiry, audience separation,
-replay protection across credential formats, and the unchanged macaroon flow.
+The tests cover exchange, upload, publisher changes, self-revocation, expiry,
+audience separation, replay protection for assertions with a `jti`, and the
+existing macaroon flow.
 
 ## Enable a local web-server trial
 
@@ -84,18 +79,22 @@ A restart alone does not update container environment variables. Do not paste
 !!! warning "Development OIDC is deliberately insecure"
 
     `dev/environment` selects `NullOIDCPublisherService`, which skips upstream
-    signature verification and replay protection. It is suitable only for a
-    private local development instance. Any real CI or shared-environment trial
-    must use `OIDC_BACKEND=warehouse.oidc.services.OIDCPublisherService`, with the
-    normal trusted publisher registration, provider configuration, and feature
-    flags. Warehouse JWT signing does not make the null upstream verifier safe.
+    signature verification and replay protection. Use it only for private local
+    development. The development debug toolbar also exposes application settings,
+    including any PEM signing key.
+
+    For shared trials, use a non-development configuration and
+    `OIDC_BACKEND=warehouse.oidc.services.OIDCPublisherService`, with the normal
+    publisher registration, provider configuration, and feature flags.
 
 ## Client protocol
 
 Register a Trusted Publisher (or pending publisher) normally. Obtain a fresh
 upstream OIDC assertion for the audience advertised by `GET /_/oidc/audience`.
 That is the **upstream** audience (`OIDC_AUDIENCE`), not `JWT_UPLOAD_AUDIENCE`.
-The normal provider/publisher checks and single-use replay protection still apply.
+With the real OIDC backend, Warehouse checks the provider and publisher and rejects
+reuse of an assertion that contains a `jti`. Assertions without a `jti` do not
+receive this replay protection.
 
 1. POST `/_/oidc/mint-token` with JSON
    `{"token": "<upstream OIDC assertion>", "token_format": "jwt"}`.
@@ -118,7 +117,7 @@ removes that project's upload authorization; adding one makes it available to an
 otherwise-valid token. Deleting the registry row revokes the token. Revocation
 affects subsequent validation, not uploads already authorized and in progress.
 
-An unavailable JWT issuer returns HTTP 422 (`not-enabled`), without falling back
+A disabled JWT issuer returns HTTP 422 (`not-enabled`), without falling back
 to a macaroon or consuming the upstream assertion. Do not silently retry without
 `token_format`. Older servers may ignore an unknown request field and return a
 macaroon: clients opting in must detect this instead of reporting a JWT trial as
@@ -203,8 +202,7 @@ deployment, distribute the correct issuer, separate audiences, and public keys t
 every verifier; supply the matching private key only where issuance is needed.
 Verification-only instances can omit **both** signing settings. Confirm the
 registry migration, cleanup worker, real OIDC backend, HTTPS endpoints, and client
-Bearer support before inviting opt-in clients. This branch does not update
-external publishing clients or provide secret-scanning integration for JWTs.
+Bearer support before inviting opt-in clients.
 
 For normal signing-key rotation, change the active key ID/private key while
 retaining old public keys for at least the remaining five-minute token lifetime

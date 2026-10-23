@@ -3,9 +3,9 @@
 This document traces how an HTTP request is authenticated and authorized in
 Warehouse, starting from the moment gunicorn hands a WSGI request to the
 Pyramid application. It covers how Pyramid's internals call into our security
-policies, how identities are resolved, and how ACLs and the other gates (route
-`auth_methods`, two-factor, verified email, macaroon caveats) combine to allow
-or deny a request.
+policies, how identities are resolved, and how ACLs and other gates (route
+`auth_methods`, two-factor, verified email, macaroon caveats, and JWT
+authorization details) combine to allow or deny a request.
 
 > This list is the single place that maps the concepts below to files (linked on
 > `main`). The prose and diagrams name symbols, not paths, so moving a file only
@@ -22,7 +22,7 @@ or deny a request.
 - [`warehouse/jwt/issuer.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/issuer.py): the opt-in signing configuration and request-scoped `WarehouseJWTIssuer`
 - [`warehouse/jwt/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/jwt/__init__.py): JWT service registration and registry cleanup scheduling
 - [`warehouse/oidc/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/oidc/utils.py): `PublisherTokenContext`
-- [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): `AuthMethodsPredicate` and the `auth_methods_for_route` helper
+- [`warehouse/predicates.py`](https://github.com/pypi/warehouse/blob/main/warehouse/predicates.py): route metadata and helpers for `auth_methods` and `jwt_audience`
 - [`warehouse/routes.py`](https://github.com/pypi/warehouse/blob/main/warehouse/routes.py) and [`warehouse/forklift/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/forklift/__init__.py): route declarations tagged with `auth_methods`
 - [`warehouse/config.py`](https://github.com/pypi/warehouse/blob/main/warehouse/config.py): `RootFactory` (the default context and the root ACL)
 - [`warehouse/utils/wsgi.py`](https://github.com/pypi/warehouse/blob/main/warehouse/utils/wsgi.py): `ProxyFixer` (trusted client IP) and `VhmRootRemover` WSGI middleware
@@ -56,9 +56,10 @@ middleware that runs before the router and establishes the trusted
 refuses to authenticate a banned IP, so that ban check is only as trustworthy
 as `ProxyFixer`.
 
-Authentication and authorization themselves **are not middleware**. They run
-*inside* the router, after the route and the context resource have been
-resolved, and only when a view declares a `permission`.
+Authentication and authorization are not middleware. Permission checks run
+inside the router after route matching and traversal, before a view declaring a
+`permission` executes. Other code can also access `request.identity` directly,
+including on routes without a view permission.
 
 ```mermaid
 flowchart TD
@@ -229,8 +230,9 @@ method is not in the route's allowed set:
 
 `auth_methods_for_route` returns `None` when a route carries no predicate, and
 each policy decides its own default for that case. `SessionSecurityPolicy` and
-`MacaroonSecurityPolicy` still engage on un-tagged routes; `BasicAuthSecurityPolicy`
-only engages when a route explicitly lists `basic-auth`. `JWTSecurityPolicy`
+`MacaroonSecurityPolicy` still engage on un-tagged routes, although the session
+policy skips routes named `api.*`. `BasicAuthSecurityPolicy` only engages when a
+route explicitly lists `basic-auth`. `JWTSecurityPolicy`
 requires an explicit `jwt` declaration and a Bearer credential that is not
 a `pypi-` macaroon. Engaging does not imply success: the default verifier rejects
 all credentials.
@@ -241,7 +243,7 @@ Every policy's `identity()` registers a `Vary` response callback (on `Cookie`
 for sessions, `Authorization` for the header-based policies) so caches don't
 serve one user's response to another. Session, BasicAuth, and Macaroon stamp
 `request.authentication_method` up front. JWT stamps `JWT` only after
-verification and account checks succeed.
+verification, the registry check, and subject resolution succeed.
 
 ### 4a. `SessionSecurityPolicy`
 
@@ -367,7 +369,7 @@ Like macaroon authentication, the publisher's filtered per-run OIDC claims are
 exposed as `request.oidc_claims`, for example to build commit-specific publisher
 URLs in upload history. They do not grant permissions and are not JWT claims.
 
-Like the macaroon policy, the JWT policy caches the identity and original
+`MultiSecurityPolicy` caches the identity and the JWT policy caches the original
 credential, not a successful validation result. Authorization rechecks token
 validity and registry liveness even when the request has already authenticated.
 Expiration or a revocation committed before the registry query prevents a later
@@ -436,8 +438,7 @@ Warehouse-issued token profile, but requires explicit configuration to enable:
   each object. Other RFC fields such as `locations`, `datatypes`, and
   `privileges` are unsupported, as are unknown types, actions, and restrictions.
   Any invalid object or action rejects the whole token, even if another is valid.
-  Unknown top-level claims and the previous experimental `grants`,
-  `permissions`/`project_ids`, and `scope` claims are rejected too.
+  Unknown top-level claims are also rejected.
 - JWT upload authorization requires an existing `Project` context, so an upload
   request cannot create the project. A pending Trusted Publisher exchange can
   create the project before issuing the JWT. Organization identities and
@@ -480,24 +481,15 @@ Users likewise remain limited to their live ACL privileges. Named-project
 identifiers remain useful when issuance should restrict a token regardless of
 later membership additions.
 
-This adopts the RFC's authorization-details representation, not a complete OAuth
-Rich Authorization Requests protocol implementation. Issuance, consent, metadata,
-and introspection flows are not introduced here.
+This profile uses the RFC's authorization-details representation; it does not
+implement the OAuth Rich Authorization Requests protocol. Subject identity and
+authorization scope are independent. Resource matching belongs to authorization,
+not cryptographic verification.
 
-Subject identity and authorization scope are independent. A future
-organization-scoped grant need not make the organization the token's subject;
-the actor can remain a user or publisher. Resource matching belongs to the
-authorization layer, not to cryptographic verification.
-
-The constructor accepts `issuer`, `audience`, and a `keys` mapping from key ID
-to parsed RSA public key. Multiple keys can be supplied for rotation. It makes
-no network requests. Bad configuration and operational errors raise rather
-than being treated as invalid credentials. Authorization binds the verified
-subject to the authenticated identity; authorization details still cannot bypass
-the live user/publisher resource ACL. Objects without identifiers deliberately
-follow live privileges; an identifier keeps its object's actions restricted to
-the named project. Removing a publisher from a project removes the ACL permission
-in either case.
+The verifier accepts an `issuer`, an `audience`, and a mapping of key IDs to
+parsed RSA public keys. Multiple keys support rotation. Verification makes no
+network requests; configuration and operational errors raise rather than being
+treated as invalid credentials.
 
 Each environment uses one issuer and separate audiences for the upload endpoint
 and the API (initially the danger API). Upload tokens must not authenticate API
@@ -574,9 +566,12 @@ without loading metadata (`is_active`), and revokes IDs by deleting their rows.
 Both lookups query the database freshly, even when a row is already in the ORM
 identity map. Registration and revocation participate
 in the caller's transaction; commit before returning a token or acknowledging
-revocation. An hourly task deletes expired rows, but expiration is enforced even
-if cleanup has not run. Metadata is set by trusted issuing code, namespaced by
-purpose, and never overrides signed claims or grants permissions. For example,
+revocation. An hourly task deletes rows at least one maximum token lifetime
+(currently five minutes) after expiration. A five-minute token therefore becomes
+eligible for cleanup ten minutes after issuance; the next task run may be later.
+Expiration is enforced even if cleanup has not run. Metadata is set by trusted
+issuing code, namespaced by purpose, and never overrides signed claims or grants
+permissions. For example,
 Trusted Publisher issuance can store
 `{"oidc": publisher.stored_claims(verified_upstream_claims)}` without storing the
 upstream credential or copying this metadata into the Warehouse JWT. Cleanup
@@ -602,27 +597,25 @@ integer-second timestamp. The returned immutable `SignedJWT` contains `token`,
 handing out the credential and roll back on failure. Issuance itself neither
 authenticates an upstream identity nor authorizes the requested grants.
 
-The Trusted Publisher exchange issues a publisher subject
-with the upload audience and an authorization detail containing
-`actions=[Permissions.ProjectsUpload]` and no resource restriction. Live publisher
-project associations still govern uploads, without enumerating projects in the
-token. Supplying project-restricted details remains supported when narrowing is
-required. Signing key rotation selects a new key ID while retaining old public
-keys long enough to verify outstanding tokens.
+Signing key rotation selects a new key ID while retaining old public keys long
+enough to verify outstanding tokens.
 
 The OIDC exchange accepts an optional `token_format` of `"macaroon"` (the default)
 or `"jwt"`. Unknown formats fail payload validation. JWT opt-in requires an enabled
-`IJWTIssuer`; unavailable issuance is rejected before publisher reification or
+`IJWTIssuer`; disabled issuance is rejected before publisher reification or
 upstream replay-token consumption, without falling back to a macaroon. Provider
 verification, publisher matching, pending-publisher handling, replay protection,
-events, and notifications remain shared between formats.
+events, and notifications remain shared between formats. The real OIDC backend
+checks replay only when the upstream assertion includes a `jti`.
 
 The JWT exchange chooses the publisher subject, upload audience, a permission-wide
 `projects:upload` authorization detail, and a five-minute lifetime on the server.
-The client cannot select those claims. Filtered `stored_claims` go into the
-registry's `additional["oidc"]`, not the JWT. The response keeps the existing
-`success`, `token`, and integer `expires` fields; default macaroons retain their
-15-minute lifetime. Use JWTs as `Authorization: Bearer <token>`, never Basic
+The client cannot select those claims. Live publisher/project associations govern
+uploads without enumerating projects in the token. Server-side callers can issue
+project-restricted tokens when narrower access is required. Filtered
+`stored_claims` go into the registry's `additional["oidc"]`, not the JWT. The
+response keeps the existing `success`, `token`, and integer `expires` fields;
+default macaroons retain their 15-minute lifetime. Use JWTs as `Authorization: Bearer <token>`, never Basic
 `__token__` credentials.
 
 The burn endpoint also accepts a Warehouse JWT in its existing `{"token": "..."}`
@@ -639,8 +632,6 @@ The JWT policy enforces registry liveness at authentication and authorization;
 the cryptographic verifier remains independent of the database. Functional tests
 cover the publisher exchange, upload, history/provenance, and burn flow. Publisher
 JWTs use the existing publisher upload path; the exchange does not issue user JWTs.
-User-backed upload issuance would need a separate integration pass over the upload
-handler's macaroon-specific behavior, email requirements, and MFA requirements.
 Deployment activation remains explicit and disabled by default. The verifier
 enforces the five-minute lifetime limit; the general registry does not define
 token-profile lifetime policy.
@@ -648,9 +639,9 @@ token-profile lifetime policy.
 ## 5. Authorization: how `permits` decides
 
 Once an identity exists and the requested permission is known, the producing
-policy's `permits()` runs. All four policies ultimately consult the
-same ACL machinery (`pyramid.authorization.ACLHelper`), but they wrap it with
-different gates.
+policy's `permits()` runs. The session, macaroon, and JWT policies consult the
+same ACL machinery (`pyramid.authorization.ACLHelper`), with different gates.
+BasicAuth never produces an identity and therefore does not authorize requests.
 
 ### Principals and the ACL
 
@@ -811,19 +802,18 @@ sequenceDiagram
 
 ## 8. Things worth remembering
 
-- Authentication and authorization run inside the router, after route matching
-  and traversal, and only for views that declare a `permission`. There is no
-  authentication middleware.
+- Permission checks run inside the router, after route matching and traversal,
+  before views that declare a `permission`. Code can also access identity on
+  routes without a view permission. There is no authentication middleware.
 - `identity()` proves *who* you are; `permits()` proves *what you may do*. For
   macaroons the split is sharper: existence and signature are checked in
   `identity()`, while caveats are checked in `permits()`.
 - The same policy that authenticates a request authorizes it. The cached
   `(identity, policy)` pair plus the `request.identity == identity` assertion
   guard against confused-deputy mistakes.
-- Route `auth_methods` is the lever for keeping browser, password, and token
-  auth from bleeding across surfaces. Adding a new authenticated API surface
-  means a new `AuthenticationMethod` and a `PERMISSION_AUTH_METHODS` entry, not
-  a new `MACAROON` grant.
+- Route `auth_methods` controls which authentication methods can engage. JWT
+  routes also declare `jwt_audience`; permissions must allow JWT in
+  `PERMISSION_AUTH_METHODS`.
 - The session path layers verified-email and two-factor gates on top of the
   ACL; the macaroon path layers the permission/method gate and caveat
   verification. Both can only turn an ACL `Allowed` into a denial, never widen
