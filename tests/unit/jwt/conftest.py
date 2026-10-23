@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import types
-
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -10,7 +8,6 @@ import pytest
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from freezegun import freeze_time
-from pyramid.authorization import Authenticated
 
 from tests.common.jwt import API_AUDIENCE, ISSUER, JTI, NOW, PROJECT_ID, USER_ID
 from warehouse.authnz import Permissions
@@ -24,7 +21,6 @@ from warehouse.jwt.claims import (
     VerifiedJWT,
 )
 from warehouse.jwt.verifier import WarehouseJWTVerifier
-from warehouse.packaging.models import Project
 
 
 @pytest.fixture
@@ -129,15 +125,3 @@ def registered_jti(jwt_registry, clock, claims):
     token_id = jwt_registry.register(datetime.fromtimestamp(claims["exp"], UTC))
     claims["jti"] = str(token_id)
     return token_id
-
-
-@pytest.fixture
-def user():
-    return types.SimpleNamespace(
-        id=UUID(USER_ID), __principals__=lambda: [Authenticated, f"user:{USER_ID}"]
-    )
-
-
-@pytest.fixture
-def project(mocker):
-    return mocker.Mock(spec=Project, id=UUID(PROJECT_ID))
