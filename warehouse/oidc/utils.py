@@ -108,14 +108,8 @@ def find_publisher_by_issuer(
 @dataclass
 class PublisherTokenContext:
     """
-    This class supports `MacaroonSecurityPolicy` in
-    `warehouse.macaroons.security_policy` and `JWTSecurityPolicy` in
-    `warehouse.jwt.security_policy`.
-
-    It is a wrapper containing both the signed claims associated with an OIDC
-    authenticated request and its `OIDCPublisher` DB model. We use it to smuggle
-    claims from the identity provider through to a session. `request.identity`
-    in an OIDC authenticated request should return this type.
+    An authenticated OIDC publisher and optional upstream claims used as
+    request provenance. Macaroon and JWT policies both use this identity.
     """
 
     publisher: OIDCPublisher
@@ -125,7 +119,7 @@ class PublisherTokenContext:
 
     claims: SignedClaims | None
     """
-    Pertinent OIDC claims from the token, if they exist.
+    Selected upstream OIDC claims, if available.
     """
 
     def __principals__(self) -> list[str]:
