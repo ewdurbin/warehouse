@@ -519,8 +519,6 @@ Verification alone never establishes live identity, registry liveness, or
 authorization. Callers must also enforce credential-method boundaries and live
 resource ACLs; observation reporting still requires observer privileges.
 
-`WarehouseJWTVerifier` verifies signatures using locally supplied RSA public keys
-of at least 2048 bits, an exact issuer, and one exact audience. It rejects
-unexpected JOSE headers, claims, algorithms, and malformed or overlong lifetimes.
-It returns the typed claim snapshot without querying models or authenticating a
-request. The real verifier is not registered by default.
+`WarehouseJWTVerifier` checks signatures with configured RSA public keys of at
+least 2048 bits and requires an exact issuer and audience. It rejects unsupported
+headers and claims, and invalid token lifetimes.

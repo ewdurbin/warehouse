@@ -42,15 +42,11 @@ _REQUIRED_CLAIMS = {
 
 @implementer(IJWTVerifier)
 class WarehouseJWTVerifier:
-    """Verify Warehouse-issued, explicitly scoped API keys.
+    """Verify Warehouse-issued JWTs against the configured issuer and audience.
 
-    Keys are supplied by trusted configuration, never by a token or remote URL.
-    Each environment has one issuer and separate upload and API audiences. Each
-    verifier requires the exact audience configured for its intended recipient.
-    RFC 9396 authorization details permit actions with optional resource narrowing.
-    Verification does not resolve the subject or authorize a request or resource.
-    This class is deliberately not registered as the default verifier yet.
-    It does not mint tokens or provide per-token revocation.
+    Keys come from trusted configuration, not tokens or remote URLs. Verification
+    does not resolve identities, check revocation, or authorize access. The
+    rejecting verifier remains the default.
     """
 
     def __init__(self, *, issuer: str, audience: str, keys: Mapping[str, RSAPublicKey]):
