@@ -223,13 +223,13 @@ def mint_token(
     if token_format == TokenFormat.JWT:
         jwt_issuer = request.find_service(IJWTIssuer, context=None)
         # Check availability before reifying a pending publisher or consuming
-        # the upstream assertion's single-use JTI. Never silently downgrade.
+        # the upstream assertion's JTI, if present. Never silently downgrade.
         if not jwt_issuer.enabled:
             return _invalid(
                 errors=[
                     {
                         "code": "not-enabled",
-                        "description": "JWT token issuance is not enabled",
+                        "description": "JWT issuance is disabled",
                     }
                 ],
                 request=request,
@@ -365,9 +365,8 @@ def mint_token(
             request=request,
         )
 
-    # Atomically claim the JTI before minting a credential. The SET NX ensures
-    # that only one request can proceed for a given JTI.
-    # Of note, exp is coming from a verified JWT here, so we don't validate it.
+    # If present, atomically claim the JTI before minting. SET NX allows only
+    # one request per JTI. The expiration comes from the verified assertion.
     if jwt_identifier := claims.get("jti"):
         expiration = cast(int, claims.get("exp"))
         if not oidc_service.store_jwt_identifier(jwt_identifier, expiration):
@@ -381,8 +380,7 @@ def mint_token(
                 request=request,
             )
 
-    # At this point, we've verified that the given JWT is valid for the given
-    # project. All we need to do is mint a new token.
+    # The assertion identifies a publisher; issue the requested credential.
     if jwt_issuer is not None:
         issued = jwt_issuer.issue(
             subject=SubjectRef(SubjectKind.PUBLISHER, publisher.id),

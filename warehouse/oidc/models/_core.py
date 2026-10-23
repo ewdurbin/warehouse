@@ -325,13 +325,10 @@ class OIDCPublisherMixin:
         self, claims: SignedClaims | None = None
     ) -> dict:  # pragma: no cover
         """
-        These are claims that are serialized into any macaroon generated for
-        this publisher. You likely want to use this to surface claims that
-        are not configured on the publishers, that might vary from one publish
-        event to the next, and are useful to show to the user.
+        Select upstream claims to store as metadata with an issued credential.
 
-        NOTE: This is **NOT** a `@property` because we pass `claims` to it.
-        When calling, make sure to use `stored_claims()`
+        Use this for values that can vary between publishing runs and are
+        useful to display, such as a commit SHA. The claims do not grant access.
         """
         # Only concrete subclasses are constructed.
         raise NotImplementedError
