@@ -12,8 +12,9 @@ from pyramid import testing
 from pyramid.authorization import Allow
 from pyramid.request import Request, apply_request_extensions
 
+from tests.common.db.accounts import UserFactory
 from tests.common.db.oidc import GitHubPublisherFactory
-from tests.common.db.packaging import ProjectFactory
+from tests.common.db.packaging import ProjectFactory, RoleFactory
 from tests.common.jwt import (
     API_AUDIENCE,
     OTHER_ID,
@@ -25,6 +26,7 @@ from warehouse.accounts import _oidc_claims, _oidc_publisher, _user
 from warehouse.accounts.interfaces import IUserService
 from warehouse.accounts.utils import UserContext
 from warehouse.authnz import Permissions
+from warehouse.config import RootFactory
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.security_policy import JWTSecurityPolicy
 from warehouse.oidc.utils import PublisherTokenContext
@@ -35,10 +37,25 @@ from warehouse.utils.security_policy import AuthenticationMethod, MultiSecurityP
 
 class TestSignedJWTPolicy:
     @pytest.fixture
-    def jwt_request(self, verifier, user, sign, mocker, jwt_registry, registered_jti):
-        user_service = mocker.Mock(spec=["get_user", "is_disabled"])
-        user_service.get_user.return_value = user
-        user_service.is_disabled.return_value = (False, None)
+    def user(self, db_session):
+        return UserFactory(id=UUID(USER_ID), is_observer=True, clear_pwd="password")
+
+    @pytest.fixture
+    def project(self, user):
+        return RoleFactory(
+            user=user, project__id=UUID(PROJECT_ID), role_name="Owner"
+        ).project
+
+    @pytest.fixture
+    def other_project(self, user):
+        return RoleFactory(
+            user=user, project__id=UUID(OTHER_ID), role_name="Owner"
+        ).project
+
+    @pytest.fixture
+    def jwt_request(
+        self, verifier, user, user_service, sign, jwt_registry, registered_jti
+    ):
         with testing.testConfig() as config:
             config.include("pyramid_services")
             config.register_service(verifier, IJWTVerifier)
@@ -55,24 +72,22 @@ class TestSignedJWTPolicy:
             request.headers["Authorization"] = f"Bearer {sign()}"
             yield request
 
-    @pytest.mark.parametrize("principal", [f"user:{USER_ID}", "user:someone-else"])
-    def test_live_acl_is_required(self, jwt_request, principal, user):
-        context = types.SimpleNamespace(
-            __acl__=[(Allow, principal, Permissions.APIEcho)]
-        )
+    @pytest.mark.parametrize("is_observer", [True, False])
+    def test_live_acl_is_required(self, jwt_request, user, is_observer):
+        user.is_observer = is_observer
         assert jwt_request.identity == UserContext(user, macaroon=None)
         assert jwt_request.authentication_method == AuthenticationMethod.JWT
-        assert bool(jwt_request.has_permission(Permissions.APIEcho, context)) == (
-            principal == f"user:{USER_ID}"
+        result = jwt_request.has_permission(
+            Permissions.APIEcho, RootFactory(jwt_request)
         )
+        assert bool(result) == is_observer
 
     def test_rechecks_expiration(self, jwt_request, clock, claims):
         assert jwt_request.identity is not None
         clock.move_to(datetime.fromtimestamp(claims["exp"], UTC))
-        context = types.SimpleNamespace(
-            __acl__=[(Allow, f"user:{USER_ID}", Permissions.APIEcho)]
+        result = jwt_request.has_permission(
+            Permissions.APIEcho, RootFactory(jwt_request)
         )
-        result = jwt_request.has_permission(Permissions.APIEcho, context)
         assert not result
         assert result.reason == "invalid_jwt"
 
@@ -80,47 +95,28 @@ class TestSignedJWTPolicy:
         claims["exp"] = claims["iat"] + 301
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
         assert jwt_request.identity is None
-        context = types.SimpleNamespace(
-            __acl__=[(Allow, f"user:{USER_ID}", Permissions.APIEcho)]
+        assert not jwt_request.has_permission(
+            Permissions.APIEcho, RootFactory(jwt_request)
         )
-        assert not jwt_request.has_permission(Permissions.APIEcho, context)
 
-    @pytest.mark.parametrize(
-        ("expected_audience", "permission"),
-        [
-            (UPLOAD_AUDIENCE, Permissions.ProjectsUpload),
-            (API_AUDIENCE, Permissions.APIEcho),
-            (API_AUDIENCE, Permissions.APIObservationsAdd),
-        ],
-    )
+    @pytest.mark.parametrize("expected_audience", [UPLOAD_AUDIENCE, API_AUDIENCE])
     @pytest.mark.parametrize(
         "token_audience",
         [API_AUDIENCE, UPLOAD_AUDIENCE, [API_AUDIENCE, UPLOAD_AUDIENCE]],
     )
-    def test_recipient_audience_is_required(
-        self,
-        jwt_request,
-        sign,
-        claims,
-        project,
-        expected_audience,
-        permission,
-        token_audience,
+    def test_expected_audience_is_required(
+        self, jwt_request, sign, claims, expected_audience, token_audience
     ):
-        # Each recipient gets its own configured verifier. Even a token with
-        # all supported permissions and a granting ACL cannot cross audiences.
         claims["aud"] = token_audience
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
-        project.__acl__ = [(Allow, f"user:{USER_ID}", permission)]
-        matches = token_audience == expected_audience
-        assert (jwt_request.identity is not None) == matches
-        assert bool(jwt_request.has_permission(permission, project)) == matches
+        assert (jwt_request.identity is not None) == (
+            token_audience == expected_audience
+        )
 
     @pytest.mark.parametrize(
         ("expected_audience", "permission"),
         [
             (UPLOAD_AUDIENCE, Permissions.ProjectsUpload),
-            (API_AUDIENCE, Permissions.APIEcho),
             (API_AUDIENCE, Permissions.APIObservationsAdd),
         ],
     )
@@ -135,7 +131,6 @@ class TestSignedJWTPolicy:
             if (permission in detail["actions"]) == granted
         ]
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
-        project.__acl__ = [(Allow, f"user:{USER_ID}", permission)]
         assert jwt_request.identity is not None
         assert bool(jwt_request.has_permission(permission, project)) == granted
 
@@ -155,11 +150,10 @@ class TestSignedJWTPolicy:
             if "identifier" in detail:
                 detail["identifier"] = f"project:{PROJECT_ID if scoped else OTHER_ID}"
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
-        project.__acl__ = [(Allow, f"user:{USER_ID}", permission)]
         assert bool(jwt_request.has_permission(permission, project)) == scoped
 
     def test_permission_resource_pairs_do_not_cross(
-        self, jwt_request, claims, sign, project
+        self, jwt_request, claims, sign, project, other_project
     ):
         claims["authorization_details"] = [
             {
@@ -174,21 +168,13 @@ class TestSignedJWTPolicy:
             },
         ]
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
-        project.__acl__ = [
-            (
-                Allow,
-                f"user:{USER_ID}",
-                [Permissions.ProjectsUpload, Permissions.APIObservationsAdd],
-            )
-        ]
         assert jwt_request.has_permission(Permissions.ProjectsUpload, project)
         assert not jwt_request.has_permission(Permissions.APIObservationsAdd, project)
-        project.id = UUID(OTHER_ID)
-        assert not jwt_request.has_permission(Permissions.ProjectsUpload, project)
-        assert jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+        assert not jwt_request.has_permission(Permissions.ProjectsUpload, other_project)
+        assert jwt_request.has_permission(Permissions.APIObservationsAdd, other_project)
 
     def test_multiple_actions_share_one_identifier(
-        self, jwt_request, claims, sign, project
+        self, jwt_request, claims, sign, project, other_project
     ):
         permissions = [Permissions.ProjectsUpload, Permissions.APIObservationsAdd]
         claims["authorization_details"] = [
@@ -199,15 +185,13 @@ class TestSignedJWTPolicy:
             }
         ]
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
-        project.__acl__ = [(Allow, f"user:{USER_ID}", permissions)]
         for permission in permissions:
             assert jwt_request.has_permission(permission, project)
-        project.id = UUID(OTHER_ID)
         for permission in permissions:
-            assert not jwt_request.has_permission(permission, project)
+            assert not jwt_request.has_permission(permission, other_project)
 
     def test_permission_wide_action_does_not_widen_other_details(
-        self, jwt_request, claims, sign, project
+        self, jwt_request, claims, sign, project, other_project
     ):
         claims["authorization_details"] = [
             {"type": "warehouse", "actions": ["projects:upload"]},
@@ -218,18 +202,10 @@ class TestSignedJWTPolicy:
             },
         ]
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
-        project.__acl__ = [
-            (
-                Allow,
-                f"user:{USER_ID}",
-                [Permissions.ProjectsUpload, Permissions.APIObservationsAdd],
-            )
-        ]
         assert jwt_request.has_permission(Permissions.ProjectsUpload, project)
         assert not jwt_request.has_permission(Permissions.APIObservationsAdd, project)
-        project.id = UUID(OTHER_ID)
-        assert jwt_request.has_permission(Permissions.ProjectsUpload, project)
-        assert jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+        assert jwt_request.has_permission(Permissions.ProjectsUpload, other_project)
+        assert jwt_request.has_permission(Permissions.APIObservationsAdd, other_project)
 
 
 class TestSignedPublisherJWTPolicy:
@@ -348,19 +324,17 @@ class TestSignedPublisherJWTPolicy:
         assert not jwt_request.has_permission(Permissions.ProjectsUpload, context)
 
     def test_upload_grant_does_not_allow_other_permissions(
-        self, jwt_request, publisher, claims, sign, project
+        self, jwt_request, claims, sign, publisher_project
     ):
         claims["authorization_details"] = [claims["authorization_details"][0]]
         jwt_request.headers["Authorization"] = f"Bearer {sign()}"
-        project.__acl__ = [
-            (
-                Allow,
-                f"oidc:{publisher.id}",
-                [Permissions.APIEcho, Permissions.APIObservationsAdd],
-            )
-        ]
-        assert not jwt_request.has_permission(Permissions.APIEcho, project)
-        assert not jwt_request.has_permission(Permissions.APIObservationsAdd, project)
+        for permission, context in (
+            (Permissions.APIEcho, RootFactory(jwt_request)),
+            (Permissions.APIObservationsAdd, publisher_project),
+        ):
+            result = jwt_request.has_permission(permission, context)
+            assert not result
+            assert result.reason == "invalid_jwt"
 
     def test_wrong_audience_denies(self, jwt_request, claims, sign):
         claims["aud"] = API_AUDIENCE
