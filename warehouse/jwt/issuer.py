@@ -72,10 +72,9 @@ class WarehouseJWTIssuerFactory:
 
 @implementer(IJWTIssuer)
 class WarehouseJWTIssuer:
-    """Sign authorized, server-selected claims and register their JTI atomically.
+    """Register and sign a token in the caller's transaction.
 
-    Authorization of issuance belongs to the caller. Nothing here accepts an
-    upstream OIDC assertion or changes the exchange endpoint's response format.
+    The caller authorizes issuance and chooses the claims.
     """
 
     enabled = True
