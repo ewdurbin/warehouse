@@ -84,7 +84,7 @@ class DatabaseJWTRegistry:
         )
 
     def delete_expired(self) -> int:
-        # Allow for bounded clock skew between cleanup workers and verifiers.
+        # Retain expired entries for one maximum token lifetime before cleanup.
         cutoff = datetime.now(UTC) - timedelta(seconds=MAX_LIFETIME_SECONDS)
         result = self.db.execute(
             delete(IssuedJWT)

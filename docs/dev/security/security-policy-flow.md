@@ -529,5 +529,6 @@ revocation participate in the caller's transaction. Missing, expired, or deleted
 rows never establish a live credential; database errors propagate. Metadata
 cannot override signed claims or grant permissions.
 
-An hourly task deletes expired registry entries and their metadata; expiration
-is enforced on every liveness query independently of cleanup timing.
+An hourly task deletes entries at least one maximum token lifetime after they
+expire. For a five-minute token, cleanup can occur ten minutes after issuance
+or later. Expiration is enforced on every liveness query, regardless of cleanup.
