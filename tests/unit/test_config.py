@@ -243,6 +243,9 @@ def test_json_dumps_with_newline():
     ],
 )
 def test_configure(monkeypatch, mocker, settings, environment):
+    # Avoid creating OS-managed application directories during tests.
+    mocker.patch.object(config.platformdirs, "user_data_dir")
+    mocker.patch.object(config.platformdirs, "user_cache_dir")
     json_renderer_cls = mocker.patch.object(
         renderers,
         "JSON",
@@ -465,6 +468,7 @@ def test_configure(monkeypatch, mocker, settings, environment):
             mocker.call(".email"),
             mocker.call(".accounts"),
             mocker.call(".macaroons"),
+            mocker.call(".jwt"),
             mocker.call(".oidc"),
             mocker.call(".attestations"),
             mocker.call(".manage"),

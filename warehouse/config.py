@@ -918,6 +918,9 @@ def configure(settings=None):
     # Register support for Macaroon based authentication
     config.include(".macaroons")
 
+    # JWT registry and rejecting verifier.
+    config.include(".jwt")
+
     # Register support for OIDC based authentication
     config.include(".oidc")
 
