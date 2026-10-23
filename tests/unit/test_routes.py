@@ -593,7 +593,8 @@ def test_routes(warehouse, mocker):
         mocker.call(
             "api.echo",
             "/danger-api/echo",
-            auth_methods={"macaroon"},
+            auth_methods={"macaroon", "jwt"},
+            jwt_audience="api",
             domain=warehouse,
         ),
         mocker.call(
@@ -601,7 +602,8 @@ def test_routes(warehouse, mocker):
             "/danger-api/projects/{name}/observations",
             factory="warehouse.packaging.models:ProjectFactory",
             traverse="/{name}",
-            auth_methods={"macaroon"},
+            auth_methods={"macaroon", "jwt"},
+            jwt_audience="api",
             domain=warehouse,
         ),
         # PEP 740 URLs
