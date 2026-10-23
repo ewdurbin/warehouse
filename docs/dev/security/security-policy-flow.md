@@ -518,3 +518,7 @@ restriction. Invalid or unknown restrictions must fail closed.
 Verification alone never establishes live identity, registry liveness, or
 authorization. Callers must also enforce credential-method boundaries and live
 resource ACLs; observation reporting still requires observer privileges.
+
+`WarehouseJWTVerifier` checks signatures with configured RSA public keys of at
+least 2048 bits and requires an exact issuer and audience. It rejects unsupported
+headers and claims, and invalid token lifetimes.
