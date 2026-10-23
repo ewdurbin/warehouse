@@ -470,6 +470,7 @@ def test_configure(monkeypatch, mocker, settings, environment):
             mocker.call(".macaroons"),
             mocker.call(".jwt"),
             mocker.call(".oidc"),
+            mocker.call(".authnz.security_policy"),
             mocker.call(".attestations"),
             mocker.call(".manage"),
             mocker.call(".organizations"),
