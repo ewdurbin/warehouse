@@ -19,9 +19,8 @@ class IJWTVerifier(Interface):
         An unverified subject must never be resolved as an identity. Invalid
         credentials return None; infrastructure and configuration failures raise.
 
-        Bind the service to its intended recipient using trusted server-side
-        route configuration. Token claims must not select the expected issuer
-        or audience.
+        Select the expected issuer and audience from trusted server-side
+        configuration, not from token claims.
 
         This performs no database lookups or resource authorization. Callers must
         check registry liveness, resolve the typed subject and its current status,
