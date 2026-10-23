@@ -53,7 +53,7 @@ def test_disabled_issuance_has_no_side_effects(db_request, github_oidc_service, 
     response = request_jwt(db_request)
     assert db_request.response.status_code == 422
     assert response["errors"] == [
-        {"code": "not-enabled", "description": "JWT token issuance is not enabled"}
+        {"code": "not-enabled", "description": "JWT issuance is disabled"}
     ]
     verify.assert_not_called()
     find.assert_not_called()
