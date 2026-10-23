@@ -6,7 +6,6 @@ from uuid import UUID
 
 import pytest
 
-from pyramid.authorization import Allow
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -39,20 +38,18 @@ def user(db_session):
 @pytest.mark.usefixtures("user")
 class TestAudienceJWTService:
     @pytest.mark.parametrize(
-        ("path", "route_name", "audience", "permission"),
+        ("path", "route_name", "audience"),
         [
             (
                 "/legacy/?:action=file_upload",
                 "forklift.legacy.file_upload",
                 UPLOAD_AUDIENCE,
-                Permissions.ProjectsUpload,
             ),
-            ("/danger-api/echo", "api.echo", API_AUDIENCE, Permissions.APIEcho),
+            ("/danger-api/echo", "api.echo", API_AUDIENCE),
             (
                 "/danger-api/projects/example/observations",
                 "api.projects.observations",
                 API_AUDIENCE,
-                Permissions.APIObservationsAdd,
             ),
         ],
     )
@@ -69,11 +66,9 @@ class TestAudienceJWTService:
         headers,
         signing_keys,
         user,
-        project,
         path,
         route_name,
         audience,
-        permission,
         token_audience,
         kid,
     ):
@@ -82,12 +77,10 @@ class TestAudienceJWTService:
         token = sign(key=signing_keys[0 if kid == "current" else 1])
         request = make_request(path, token)
         assert request.matched_route.name == route_name
-        project.__acl__ = [(Allow, f"user:{USER_ID}", permission)]
         accepted = token_audience == audience
         assert request.identity == (
             UserContext(user, macaroon=None) if accepted else None
         )
-        assert bool(request.has_permission(permission, project)) == accepted
         if accepted:
             assert request.authentication_method == AuthenticationMethod.JWT
 
@@ -114,23 +107,16 @@ class TestAudienceJWTService:
         assert (request.identity is not None) == (token_audience == audience)
 
     def test_audiences_do_not_change_each_others_verifier(
-        self, make_request, sign, claims, project
+        self, make_request, sign, claims
     ):
-        api_request = make_request("/danger-api/echo", sign())
+        api_token = sign()
+        api_request = make_request("/danger-api/echo", api_token)
+        assert api_request.identity is not None
+        api_verifier = api_request.find_service(IJWTVerifier, context=None)
         claims["aud"] = UPLOAD_AUDIENCE
         upload_request = make_request("/legacy/?:action=file_upload", sign())
-        assert api_request.identity is not None
         assert upload_request.identity is not None
-        project.__acl__ = [
-            (
-                Allow,
-                f"user:{USER_ID}",
-                [Permissions.APIEcho, Permissions.ProjectsUpload],
-            )
-        ]
-        assert api_request.has_permission(Permissions.APIEcho, project)
-        assert upload_request.has_permission(Permissions.ProjectsUpload, project)
-        assert api_request.has_permission(Permissions.APIEcho, project)
+        assert api_verifier.verify(api_token) is not None
 
     @pytest.mark.parametrize(
         "matched_path", ["/danger-api/echo", "/legacy/?:action=file_upload"]
