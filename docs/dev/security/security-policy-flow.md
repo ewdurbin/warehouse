@@ -566,9 +566,8 @@ tests and cannot be selected by deployment configuration.
 The upload route uses the upload audience. The echo and observation routes use
 the API audience; observation authorization still requires observer privileges.
 
-`IJWTIssuer` can now mint a signed JWT and return its registered ID and expiration.
-The service validates the same profile used for verification, registers the ID
-and server-only metadata in the request transaction, then signs with the
-configured key. It never commits the transaction itself. Signing is separately
-opt-in: verification-only deployments need no private key, and the default issuer
-raises rather than minting a token. There is still no public issuance endpoint.
+`IJWTIssuer` signs a JWT and returns its registered ID and expiration. It validates
+the profile, registers the ID and server-only metadata in the caller's transaction,
+and signs with the configured key. The caller must commit the transaction. Signing
+is opt-in: verification-only deployments need no private key, and the default
+issuer rejects issuance.
