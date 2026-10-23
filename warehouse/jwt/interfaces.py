@@ -58,4 +58,4 @@ class IJWTRegistry(Interface):
         """Delete the entry if it exists. The caller authorizes revocation."""
 
     def delete_expired() -> int:
-        """Delete expired entries and return their count; never extend validity."""
+        """Delete and count entries at least one maximum lifetime past expiry."""
