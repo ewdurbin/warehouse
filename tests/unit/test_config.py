@@ -250,6 +250,8 @@ def test_json_dumps_with_newline():
             "JWT_ISSUER": "https://warehouse.example",
             "JWT_UPLOAD_AUDIENCE": "https://warehouse.example/upload",
             "JWT_API_AUDIENCE": "https://warehouse.example/api",
+            "JWT_SIGNING_KEY_ID": "current",
+            "JWT_KMS_KEY_ID": "alias/pypi-access",
             "JWT_VERIFICATION_KEYS": '{"current": "PEM public key"}',
         },
     ],
@@ -428,6 +430,8 @@ def test_configure(monkeypatch, mocker, settings, environment, jwt_environment):
                 "warehouse.jwt.issuer": "https://warehouse.example",
                 "warehouse.jwt.upload_audience": "https://warehouse.example/upload",
                 "warehouse.jwt.api_audience": "https://warehouse.example/api",
+                "warehouse.jwt.signing_key_id": "current",
+                "warehouse.jwt.kms_key_id": "alias/pypi-access",
                 "warehouse.jwt.verification_keys": {"current": "PEM public key"},
             }
         )

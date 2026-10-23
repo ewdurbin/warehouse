@@ -479,6 +479,8 @@ def configure(settings=None):
     maybe_set(settings, "warehouse.jwt.issuer", "JWT_ISSUER")
     maybe_set(settings, "warehouse.jwt.upload_audience", "JWT_UPLOAD_AUDIENCE")
     maybe_set(settings, "warehouse.jwt.api_audience", "JWT_API_AUDIENCE")
+    maybe_set(settings, "warehouse.jwt.signing_key_id", "JWT_SIGNING_KEY_ID")
+    maybe_set(settings, "warehouse.jwt.kms_key_id", "JWT_KMS_KEY_ID")
     maybe_set(
         settings,
         "warehouse.jwt.verification_keys",

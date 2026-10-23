@@ -553,5 +553,15 @@ at startup. Without the key setting, Warehouse uses the rejecting verifier.
 Each route must opt in to JWT authentication and declare a `jwt_audience`.
 That declaration selects the expected audience for the request.
 
+The `IJWTSigner` contract signs server-selected claims using the Warehouse access
+token profile. `KMSJWTSignerService` is the production implementation: it requires
+an RSA `SIGN_VERIFY` KMS key, `JWT_SIGNING_KEY_ID`, and a matching public key in
+`JWT_VERIFICATION_KEYS`. `JWT_KMS_KEY_ID` may identify the key by ID, ARN, or alias.
+The workload needs `kms:GetPublicKey` and `kms:Sign` on that key. At startup, the
+signer checks the configured public key and pins the immutable KMS key ARN. Each
+signature uses `RSASSA_PKCS1_V1_5_SHA_256`; the private key never enters Warehouse.
+Verification remains local. `TestJWTSignerService` signs with an ephemeral key in
+tests and cannot be selected by deployment configuration.
+
 The upload route uses the upload audience. The echo and observation routes use
 the API audience; observation authorization still requires observer privileges.
