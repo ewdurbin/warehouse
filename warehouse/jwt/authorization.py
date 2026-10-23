@@ -13,11 +13,10 @@ from warehouse.packaging.models import Project
 
 
 def permits(verified: VerifiedJWT, identity, context, permission) -> bool:
-    """Check subject binding and details, not validity, registry liveness, or ACLs.
+    """Check authorization details against the resolved subject and context.
 
-    The caller must supply a freshly verified result for the original credential.
-    Resource adapters live here, not in the cryptographic verifier. Unsupported
-    identities, permissions, and resource types never imply unrestricted access.
+    The caller must verify the original credential, check registry liveness, and
+    enforce ACLs. Unsupported identities, permissions, and resources are denied.
     """
     if verified.subject.kind == SubjectKind.USER:
         if (
@@ -37,8 +36,8 @@ def permits(verified: VerifiedJWT, identity, context, permission) -> bool:
 
     if not isinstance(permission, Permissions):
         return False
-    # Permission-wide is not context-free: uploads and observations still act on
-    # projects. ACLs decide the subject's current privileges on each project.
+    # Uploads and observations require a project context; ACLs check the
+    # subject's current privileges on that project.
     if permission in (Permissions.ProjectsUpload, Permissions.APIObservationsAdd):
         if not isinstance(context, Project):
             return False
