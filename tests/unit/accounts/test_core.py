@@ -104,7 +104,6 @@ def config(mocker):
             "register_service_factory",
             "register_rate_limiter",
             "add_request_method",
-            "set_security_policy",
             "maybe_dotted",
             "add_route_predicate",
             "add_periodic_task",
@@ -133,22 +132,6 @@ def config(mocker):
 
 
 def test_includeme(config, mocker):
-    multi_policy_cls = mocker.patch.object(
-        accounts, "MultiSecurityPolicy", autospec=True
-    )
-    session_policy_cls = mocker.patch.object(
-        accounts, "SessionSecurityPolicy", autospec=True
-    )
-    basic_policy_cls = mocker.patch.object(
-        accounts, "BasicAuthSecurityPolicy", autospec=True
-    )
-    macaroon_policy_cls = mocker.patch.object(
-        accounts, "MacaroonSecurityPolicy", autospec=True
-    )
-    jwt_policy_cls = mocker.patch.object(
-        accounts.jwt_security_policy, "JWTSecurityPolicy", autospec=True
-    )
-
     accounts.includeme(config)
 
     assert config.register_service_factory.call_args_list == [
@@ -210,15 +193,6 @@ def test_includeme(config, mocker):
         mocker.call(accounts._oidc_claims, name="oidc_claims", reify=True),
         mocker.call(accounts._unauthenticated_userid, name="_unauthenticated_userid"),
     ]
-    config.set_security_policy.assert_called_once_with(multi_policy_cls.return_value)
-    multi_policy_cls.assert_called_once_with(
-        [
-            session_policy_cls.return_value,
-            basic_policy_cls.return_value,
-            macaroon_policy_cls.return_value,
-            jwt_policy_cls.return_value,
-        ]
-    )
     assert (
         mocker.call(crontab(minute="*/20"), compute_user_metrics)
         in config.add_periodic_task.call_args_list

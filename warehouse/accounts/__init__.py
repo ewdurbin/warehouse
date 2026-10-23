@@ -17,10 +17,6 @@ from warehouse.accounts.oauth import (
     NullGitHubOAuthClient,
     NullGitLabOAuthClient,
 )
-from warehouse.accounts.security_policy import (
-    BasicAuthSecurityPolicy,
-    SessionSecurityPolicy,
-)
 from warehouse.accounts.services import (
     HaveIBeenPwnedEmailBreachedService,
     HaveIBeenPwnedPasswordBreachedService,
@@ -38,10 +34,7 @@ from warehouse.accounts.tasks import (
     unverify_emails_with_expired_domains,
 )
 from warehouse.accounts.utils import UserContext
-from warehouse.jwt import security_policy as jwt_security_policy
-from warehouse.macaroons.security_policy import MacaroonSecurityPolicy
 from warehouse.oidc.utils import PublisherTokenContext
-from warehouse.utils.security_policy import MultiSecurityPolicy
 
 __all__ = [
     "GitHubAppClient",
@@ -163,18 +156,6 @@ def includeme(config):
         config.register_service_factory(
             gitlab_oauth_class.create_service, IOAuthProviderService, name="gitlab"
         )
-
-    # Register our security policies.
-    config.set_security_policy(
-        MultiSecurityPolicy(
-            [
-                SessionSecurityPolicy(),
-                BasicAuthSecurityPolicy(),
-                MacaroonSecurityPolicy(),
-                jwt_security_policy.JWTSecurityPolicy(),
-            ],
-        )
-    )
 
     # Add a request method which will allow people to access the specific current
     # request identity by type, if they know it.
