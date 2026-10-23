@@ -23,6 +23,16 @@ class IJWTVerifier(Interface):
         """
 
 
+class IJWTSigner(Interface):
+    def sign(claims: dict[str, object]) -> str:
+        """Sign server-selected claims as a compact Warehouse access JWT.
+
+        The signer sets the algorithm, token type, and key ID. The caller
+        validates the claims and handles registration and authorization.
+        If signing fails with the configured key, raise the error.
+        """
+
+
 class IJWTRegistry(Interface):
     """Track issued JWT IDs, expiration times, and metadata.
 
