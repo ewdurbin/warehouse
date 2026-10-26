@@ -18,7 +18,7 @@ from zope.interface.verify import verifyClass
 
 from tests.common.db.oidc import GitHubPublisherFactory
 from tests.common.db.packaging import ProjectFactory
-from tests.common.jwt import API_AUDIENCE, ISSUER, UPLOAD_AUDIENCE
+from tests.common.jwt import API_AUDIENCE, ISSUER, NOW, UPLOAD_AUDIENCE
 from warehouse.accounts import _oidc_claims
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
@@ -43,7 +43,8 @@ AUDIENCES = {"upload": UPLOAD_AUDIENCE, "api": API_AUDIENCE}
 
 @pytest.fixture
 def clock():
-    with freeze_time("2026-10-22 00:00:00.123456+00:00", ignore=["_pytest"]) as clock:
+    instant = datetime.fromtimestamp(NOW, UTC).replace(microsecond=123456)
+    with freeze_time(instant, ignore=["_pytest"]) as clock:
         yield clock
 
 
@@ -78,12 +79,14 @@ class TestDisabledJWTIssuer:
         with pytest.raises(RuntimeError, match="JWT issuance is disabled"):
             factory(None, None).issue(**issue_args)
 
-    def test_verification_only_needs_no_signing_access(self, warehouse_jwt_settings):
-        del warehouse_jwt_settings["warehouse.jwt.kms_key_id"]
-        del warehouse_jwt_settings["warehouse.jwt.signing_key_id"]
+    def test_verification_only_needs_no_signing_access(self, make_request, sign):
+        token = sign()
+        request = make_request("/danger-api/echo", token)
+        assert isinstance(
+            request.find_service(IJWTIssuer, context=None), DisabledJWTIssuer
+        )
         assert (
-            jwt_issuer_factory(warehouse_jwt_settings)
-            == DisabledJWTIssuer.create_service
+            request.find_service(IJWTVerifier, context=None).verify(token) is not None
         )
 
 
