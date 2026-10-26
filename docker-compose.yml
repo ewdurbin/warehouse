@@ -64,6 +64,17 @@ services:
     volumes:
       - cachedata:/data
 
+  kms:
+    image: nsmithuk/local-kms:3.11.7
+    environment:
+      KMS_REGION: us-east-1
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
+      interval: 1s
+      start_period: 10s
+    volumes:
+      - ./dev/compose/kms/seed.yaml:/init/seed.yaml:ro,z
+
   opensearch:
     build:
       context: ./dev/compose/opensearch
@@ -122,7 +133,14 @@ services:
   web:
     image: warehouse:docker-compose
     command: gunicorn --reload --reload-extra-file=warehouse/api/openapi.yaml --threads 4 -b 0.0.0.0:8000 --access-logfile - --error-logfile - --logger-class warehouse.logging.GunicornLogger warehouse.wsgi:application
-    env_file: dev/environment
+    env_file:
+      - dev/environment
+      - dev/compose/kms/environment
+    environment:
+      AWS_ENDPOINT_URL_KMS: http://kms:8080
+      AWS_REGION: us-east-1
+      JWT_SIGNING_KEY_ID: local-1
+      JWT_KMS_KEY_ID: alias/local-1
     pull_policy: never
     volumes: *base_volumes
     labels:
@@ -133,6 +151,8 @@ services:
       - "traefik.http.services.web.loadbalancer.server.port=8000"
     depends_on:
       db:
+        condition: service_healthy
+      kms:
         condition: service_healthy
       opensearch:
         condition: service_started

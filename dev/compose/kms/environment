@@ -1,0 +1,8 @@
+# Public keys for the local KMS fixtures in seed.yaml.
+JWT_ISSUER=urn:warehouse:local
+JWT_UPLOAD_AUDIENCE=urn:warehouse:local:upload
+JWT_API_AUDIENCE=urn:warehouse:local:api
+JWT_VERIFICATION_KEYS='{
+  "local-1": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxKI9lia5Q+IBM5zcg2T1\nLg4z3+IPsalbtY08V3jnfayGB76sODMGE9O/3GpYa1yck5fpdYIikkWix0kBAWR4\nUx6ynFzFpGjLstTFYi6XfQu8c4m5+pRXg1hg2E06UpJHv5aZ3Z3LMJeLemVCw1gS\ncPLgRzLGMeDdE5s4JtUlTEim+0BM29ZzgMghnjo3qN3N50B+Odh+lmv9t/dPlY84\nplQVwNu3evSzN2Wkx6NTEBCF8TlyzqEKHPVXeHdygPEQJfdtSzbHKtoMwRyL+eIP\ngrq7Kt0XtJZg6+tX8lOtT8sP/BxpEJ2yFKxjrvGTnmF2PL79CJn6llwx2esYAK9X\nawIDAQAB\n-----END PUBLIC KEY-----\n",
+  "local-2": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7vTle24TDNEWYe0uncAC\neosicrZ0BRxj/iSUTvTYCfHlsFtpxtCyJBJ0B8u13hieCfik+QwPzbB09INYERL+\nEQex8A/ojuRKGI0adeWj1KeSVLyKFCY6sivLxvPXKaLAmSUZfPL0r5Nvo6RC/QNu\nfiSp7UTTNq13JdVMfNsPKdK7FTTkxcgvI4X4qPuW9FRHWttJzu/YkOMLJ9ezRdF1\nMfyHBCJm4pq7ilJvXYPpsdW0rjO5UUWFLALpQowxu+N6SK//dmaBeuEp4bPmoJoO\nn2zQWzGCDBnlUe5fNgqtqKGG8IqKnnFlOsVlP2HUYF+JNryj+9fpri/sxbmuelLl\nHQIDAQAB\n-----END PUBLIC KEY-----\n"
+}'
