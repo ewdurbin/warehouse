@@ -249,6 +249,21 @@ TUF trust root for development, and creates the initial set of TUF metadata.
     * RSTUF API: http://localhost:8001
     * TUF Metadata Repository: http://localhost:9001/tuf-metadata/
 
+#### Local JWT signing
+
+When you start Warehouse with `make serve`, the Compose `kms` service loads
+two RSA signing keys from `dev/compose/kms/seed.yaml`. These are public
+development fixtures shared by every checkout. Use them only for local
+development. Warehouse sends signing requests to `http://kms:8080` and uses the
+matching public keys from `dev/compose/kms/environment` to verify JWTs.
+
+By default, the signer uses `local-1`. To try rotation, set
+`JWT_SIGNING_KEY_ID` to `local-2` and `JWT_KMS_KEY_ID` to `alias/local-2`
+under `web.environment` in your `docker-compose.override.yaml`. Run
+`docker compose up -d web` to apply the change. New tokens carry `kid: local-2`.
+Unexpired tokens signed with `local-1` still verify because Warehouse trusts
+both public keys.
+
 ### Resetting the development database
 
 ```console
