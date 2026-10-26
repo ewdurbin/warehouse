@@ -92,3 +92,14 @@ class DatabaseJWTRegistry:
             .execution_options(synchronize_session=False)
         )
         return result.rowcount
+
+
+def jwt_verifier_factory(settings):
+    """Select the JWT verifier factory from trusted settings."""
+    if "warehouse.jwt.verification_keys" not in settings:
+        return DisabledJWTVerifier.create_service
+
+    # The verifier factory also imports DisabledJWTVerifier from this module.
+    from warehouse.jwt.verifier import WarehouseJWTVerifierFactory  # noqa: PLC0415
+
+    return WarehouseJWTVerifierFactory(settings)

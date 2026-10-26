@@ -127,6 +127,10 @@ class TestMacaroonSecurityPolicy:
                 ),
                 id="auth_methods excludes macaroon",
             ),
+            pytest.param(
+                types.SimpleNamespace(predicates=[AuthMethodsPredicate({"jwt"}, None)]),
+                id="JWT-only route excludes macaroon",
+            ),
         ],
     )
     def test_identity_skips_macaroon(self, pyramid_request, mocker, matched_route):

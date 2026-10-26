@@ -242,8 +242,20 @@ def test_json_dumps_with_newline():
         ({"my settings": "the settings value"}, config.Environment.development),
     ],
 )
-def test_configure(monkeypatch, mocker, settings, environment):
-    # Avoid creating OS-managed application directories during tests.
+@pytest.mark.parametrize(
+    "jwt_environment",
+    [
+        {},
+        {
+            "JWT_ISSUER": "https://warehouse.example",
+            "JWT_UPLOAD_AUDIENCE": "https://warehouse.example/upload",
+            "JWT_API_AUDIENCE": "https://warehouse.example/api",
+            "JWT_VERIFICATION_KEYS": '{"current": "PEM public key"}',
+        },
+    ],
+)
+def test_configure(monkeypatch, mocker, settings, environment, jwt_environment):
+    # Assembling configuration should not create OS-managed app directories here.
     mocker.patch.object(config.platformdirs, "user_data_dir")
     mocker.patch.object(config.platformdirs, "user_cache_dir")
     json_renderer_cls = mocker.patch.object(
@@ -269,6 +281,7 @@ def test_configure(monkeypatch, mocker, settings, environment):
                 config.Environment.production: "production",
             }[environment],
             "GCLOUD_SERVICE_JSON": "e30=",
+            **jwt_environment,
         },
     )
 
@@ -406,6 +419,16 @@ def test_configure(monkeypatch, mocker, settings, environment):
                     ),
                 ],
                 "livereload.url": "http://localhost:35729",
+            }
+        )
+
+    if jwt_environment:
+        expected_settings.update(
+            {
+                "warehouse.jwt.issuer": "https://warehouse.example",
+                "warehouse.jwt.upload_audience": "https://warehouse.example/upload",
+                "warehouse.jwt.api_audience": "https://warehouse.example/api",
+                "warehouse.jwt.verification_keys": {"current": "PEM public key"},
             }
         )
 

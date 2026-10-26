@@ -545,3 +545,13 @@ user or publisher. Authorization rechecks the token, registry, subject,
 authorization details, and live ACL. JWTs are not accepted via Basic or Token
 headers. `API_KEY` remains an unimplemented placeholder, and the default JWT
 verifier rejects all tokens.
+
+Supplying `JWT_VERIFICATION_KEYS` enables verification. Warehouse requires
+a nonempty mapping of key IDs to public PEMs, an exact issuer, and distinct
+upload and API audiences. Invalid or incomplete verification configuration fails
+at startup. Without the key setting, Warehouse uses the rejecting verifier.
+Each route must opt in to JWT authentication and declare a `jwt_audience`.
+That declaration selects the expected audience for the request.
+
+The upload route uses the upload audience. The echo and observation routes use
+the API audience; observation authorization still requires observer privileges.

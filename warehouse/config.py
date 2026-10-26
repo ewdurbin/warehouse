@@ -476,6 +476,15 @@ def configure(settings=None):
     )
     maybe_set_compound(settings, "github.oauth", "backend", "GITHUB_OAUTH_BACKEND")
     maybe_set_compound(settings, "gitlab.oauth", "backend", "GITLAB_OAUTH_BACKEND")
+    maybe_set(settings, "warehouse.jwt.issuer", "JWT_ISSUER")
+    maybe_set(settings, "warehouse.jwt.upload_audience", "JWT_UPLOAD_AUDIENCE")
+    maybe_set(settings, "warehouse.jwt.api_audience", "JWT_API_AUDIENCE")
+    maybe_set(
+        settings,
+        "warehouse.jwt.verification_keys",
+        "JWT_VERIFICATION_KEYS",
+        coercer=json.loads,
+    )
     maybe_set(
         settings,
         "oidc.backend",
@@ -918,7 +927,7 @@ def configure(settings=None):
     # Register support for Macaroon based authentication
     config.include(".macaroons")
 
-    # JWT registry and rejecting verifier.
+    # Register authentication and the lifecycle registry for Warehouse-issued JWTs.
     config.include(".jwt")
 
     # Register support for OIDC based authentication

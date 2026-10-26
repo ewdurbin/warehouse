@@ -65,6 +65,35 @@ def auth_methods_for_route(route) -> frozenset[AuthenticationMethod] | None:
     return None
 
 
+class JWTAudiencePredicate:
+    """Storage-only declaration of the named JWT audience used by a route.
+
+    The verifier resolves this trusted label to the configured aud claim value.
+    Like auth_methods, this predicate always matches and does not affect routing.
+    """
+
+    def __init__(self, val, config):
+        if val not in ("upload", "api"):
+            raise ConfigurationError("jwt_audience must be 'upload' or 'api'")
+        self.val = val
+
+    def text(self):
+        return f"jwt_audience = {self.val!r}"
+
+    phash = text
+
+    def __call__(self, info, request):
+        return True
+
+
+def jwt_audience_for_route(route) -> str | None:
+    """Return the route's JWT audience label, or None when undeclared."""
+    for predicate in route.predicates:
+        if isinstance(predicate, JWTAudiencePredicate):
+            return predicate.val
+    return None
+
+
 class HeadersPredicate:
     def __init__(self, val: list[str], config):
         if not val:
@@ -123,6 +152,7 @@ class ActiveOrganizationPredicate:
 def includeme(config):
     config.add_route_predicate("domain", DomainPredicate)
     config.add_route_predicate("auth_methods", AuthMethodsPredicate)
+    config.add_route_predicate("jwt_audience", JWTAudiencePredicate)
     config.add_view_predicate("require_headers", HeadersPredicate)
     config.add_view_predicate(
         "require_active_organization", ActiveOrganizationPredicate
