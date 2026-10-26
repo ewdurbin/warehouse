@@ -56,10 +56,11 @@ from warehouse.email import services as email_services
 from warehouse.email.interfaces import IEmailSender
 from warehouse.helpdesk import services as helpdesk_services
 from warehouse.helpdesk.interfaces import IAdminNotificationService, IHelpDeskService
-from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTVerifier
 from warehouse.jwt.services import (
     DatabaseJWTRegistry,
     DisabledJWTIssuer,
+    DisabledJWTVerifier,
 )
 from warehouse.jwt.signing import TestJWTSignerService as JWTTestSigner
 from warehouse.macaroons import services as macaroon_services
@@ -259,6 +260,7 @@ def pyramid_services(
     services.register_service(macaroon_service, IMacaroonService, None, name="")
     services.register_service(jwt_registry, IJWTRegistry, None)
     services.register_service(DisabledJWTIssuer(), IJWTIssuer, None)
+    services.register_service(DisabledJWTVerifier(), IJWTVerifier, None, name="upload")
     services.register_service(helpdesk_service, IHelpDeskService, None)
     services.register_service(notification_service, IAdminNotificationService)
     services.register_service(query_results_cache_service, IQueryResultsCache)

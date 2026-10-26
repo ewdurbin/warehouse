@@ -571,3 +571,9 @@ the caller's transaction, and delegates signing to `IJWTSigner`. The caller must
 commit the transaction. Configuring both signing IDs enables issuance. Supplying
 only one fails startup. With neither ID, Warehouse can verify tokens using public
 keys alone.
+
+The existing Trusted Publishing burn endpoint also accepts publisher JWTs. A named
+upload verifier fixes the expected audience independently of route metadata.
+Only a valid publisher credential can revoke its own active registry entry, even
+if the publisher has since been deleted. The endpoint keeps its non-enumerating
+202 response, its existing macaroon behavior, and request-owned transactions.
