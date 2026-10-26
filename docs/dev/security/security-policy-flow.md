@@ -546,12 +546,12 @@ authorization details, and live ACL. JWTs are not accepted via Basic or Token
 headers. `API_KEY` remains an unimplemented placeholder, and the default JWT
 verifier rejects all tokens.
 
-Trusted configuration can opt into verification with `warehouse.jwt.enabled`,
-an exact issuer, distinct upload/API audiences, and a key-ID-to-public-PEM
-mapping. Route `jwt_audience` metadata selects the named audience; headers,
-hostnames, paths, and unverified claims cannot choose it. Both the audience
-declaration and explicit JWT route opt-in are required. Missing opt-in keeps
-the rejecting verifier, and enabling incomplete configuration fails startup.
+Supplying `JWT_VERIFICATION_KEYS` enables verification. Warehouse requires
+a nonempty mapping of key IDs to public PEMs, an exact issuer, and distinct
+upload and API audiences. Invalid or incomplete verification configuration fails
+at startup. Without the key setting, Warehouse uses the rejecting verifier.
+Each route must opt in to JWT authentication and declare a `jwt_audience`.
+That declaration selects the expected audience for the request.
 
 The upload route uses the upload audience. The echo and observation routes use
 the API audience; observation authorization still requires observer privileges.

@@ -84,9 +84,8 @@ class TestAudienceJWTService:
         if accepted:
             assert request.authentication_method == AuthenticationMethod.JWT
 
-    @pytest.mark.parametrize("jwt_enabled", [None, False, "false"])
+    @pytest.mark.parametrize("jwt_settings", [{}])
     def test_disabled_by_default(self, make_request, sign):
-        # Having valid keys alone must not enable JWTs.
         request = make_request("/danger-api/echo", sign())
         assert isinstance(
             request.find_service(IJWTVerifier, context=None), DisabledJWTVerifier

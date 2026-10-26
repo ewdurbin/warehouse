@@ -247,7 +247,6 @@ def test_json_dumps_with_newline():
     [
         {},
         {
-            "JWT_ENABLED": "false",
             "JWT_ISSUER": "https://warehouse.example",
             "JWT_UPLOAD_AUDIENCE": "https://warehouse.example/upload",
             "JWT_API_AUDIENCE": "https://warehouse.example/api",
@@ -426,7 +425,6 @@ def test_configure(monkeypatch, mocker, settings, environment, jwt_environment):
     if jwt_environment:
         expected_settings.update(
             {
-                "warehouse.jwt.enabled": False,
                 "warehouse.jwt.issuer": "https://warehouse.example",
                 "warehouse.jwt.upload_audience": "https://warehouse.example/upload",
                 "warehouse.jwt.api_audience": "https://warehouse.example/api",
