@@ -118,3 +118,10 @@ def verifier(signing_keys, clock, expected_audience):
         audience=expected_audience,
         keys={"current": signing_keys[0].public_key()},
     )
+
+
+@pytest.fixture
+def registered_jti(jwt_registry, clock, claims):
+    token_id = jwt_registry.register(datetime.fromtimestamp(claims["exp"], UTC))
+    claims["jti"] = str(token_id)
+    return token_id

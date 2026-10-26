@@ -26,22 +26,33 @@ class AuthenticationMethod(enum.Enum):
     # Placeholder for the Maintainer API, the key-authenticated surface kept
     # distinct from Upload API Tokens (macaroons). No policy implements it yet.
     API_KEY = "api-key"
+    # Warehouse-issued JWTs. The JWT verifier is disabled by default.
+    JWT = "jwt"
 
 
 # Which AuthenticationMethods may grant a given Permission. Anything not in
 # this table defaults to SESSION-only (browser flows).
 #
-# MACAROON should long-term only grant ProjectsUpload. The APIEcho and
-# APIObservationsAdd entries are transitional and go away once the Maintainer
-# API takes over those endpoints. Don't add new MACAROON entries here; new API
-# endpoints authenticate with API_KEY instead.
+# MACAROON should long-term only grant ProjectsUpload. Its APIEcho and
+# APIObservationsAdd allowances are transitional and go away once the
+# Maintainer API takes over those endpoints. Don't add new MACAROON entries
+# here; JWT-enabled endpoints authenticate with JWT instead. API_KEY remains
+# an unimplemented placeholder and grants no permissions.
 PERMISSION_AUTH_METHODS: dict[Permissions, frozenset[AuthenticationMethod]] = {
     Permissions.ProjectsUpload: frozenset(
-        {AuthenticationMethod.MACAROON, AuthenticationMethod.BASIC_AUTH}
+        {
+            AuthenticationMethod.MACAROON,
+            AuthenticationMethod.BASIC_AUTH,
+            AuthenticationMethod.JWT,
+        }
     ),
-    # Transitional: move to the Maintainer API, then delete.
-    Permissions.APIEcho: frozenset({AuthenticationMethod.MACAROON}),
-    Permissions.APIObservationsAdd: frozenset({AuthenticationMethod.MACAROON}),
+    # Transitional: remove MACAROON when these move to the Maintainer API.
+    Permissions.APIEcho: frozenset(
+        {AuthenticationMethod.MACAROON, AuthenticationMethod.JWT}
+    ),
+    Permissions.APIObservationsAdd: frozenset(
+        {AuthenticationMethod.MACAROON, AuthenticationMethod.JWT}
+    ),
 }
 
 
