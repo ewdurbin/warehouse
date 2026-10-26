@@ -23,6 +23,8 @@ import stripe
 import transaction
 import webtest as _webtest
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from jinja2 import Environment, FileSystemLoader
 from psycopg.errors import InvalidCatalogName
 from pypi_attestations import Attestation, Envelope, Provenance, VerificationMaterial
@@ -54,8 +56,12 @@ from warehouse.email import services as email_services
 from warehouse.email.interfaces import IEmailSender
 from warehouse.helpdesk import services as helpdesk_services
 from warehouse.helpdesk.interfaces import IAdminNotificationService, IHelpDeskService
-from warehouse.jwt.interfaces import IJWTRegistry
-from warehouse.jwt.services import DatabaseJWTRegistry
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry
+from warehouse.jwt.services import (
+    DatabaseJWTRegistry,
+    DisabledJWTIssuer,
+)
+from warehouse.jwt.signing import TestJWTSignerService as JWTTestSigner
 from warehouse.macaroons import services as macaroon_services
 from warehouse.macaroons.interfaces import IMacaroonService
 from warehouse.metrics import IMetricsService
@@ -77,6 +83,7 @@ from .common.constants import REMOTE_ADDR, REMOTE_ADDR_HASHED
 from .common.db import Session
 from .common.db.accounts import EmailFactory, UserFactory
 from .common.db.ip_addresses import IpAddressFactory
+from .common.jwt import API_AUDIENCE, ISSUER, UPLOAD_AUDIENCE
 
 _HERE = Path(__file__).parent.resolve()
 _FIXTURES = _HERE / "_fixtures"
@@ -251,6 +258,7 @@ def pyramid_services(
     services.register_service(integrity_service, IIntegrityService, None)
     services.register_service(macaroon_service, IMacaroonService, None, name="")
     services.register_service(jwt_registry, IJWTRegistry, None)
+    services.register_service(DisabledJWTIssuer(), IJWTIssuer, None)
     services.register_service(helpdesk_service, IHelpDeskService, None)
     services.register_service(notification_service, IAdminNotificationService)
     services.register_service(query_results_cache_service, IQueryResultsCache)
@@ -536,6 +544,35 @@ def project_service(db_session, metrics, ratelimiters=None):
 @pytest.fixture
 def jwt_registry(db_session):
     return DatabaseJWTRegistry(db_session)
+
+
+@pytest.fixture(scope="session")
+def warehouse_jwt_key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture
+def warehouse_jwt_signer(warehouse_jwt_key):
+    return JWTTestSigner(key_id="current", key=warehouse_jwt_key)
+
+
+@pytest.fixture
+def warehouse_jwt_settings(warehouse_jwt_key):
+    return {
+        "warehouse.jwt.issuer": ISSUER,
+        "warehouse.jwt.upload_audience": UPLOAD_AUDIENCE,
+        "warehouse.jwt.api_audience": API_AUDIENCE,
+        "warehouse.jwt.signing_key_id": "current",
+        "warehouse.jwt.kms_key_id": "alias/pypi-access",
+        "warehouse.jwt.verification_keys": {
+            "current": warehouse_jwt_key.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        },
+    }
 
 
 @pytest.fixture

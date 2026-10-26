@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
+from uuid import UUID
+
+from pyramid.exceptions import ConfigurationError
+from zope.interface import implementer
+
+from warehouse.jwt.claims import (
+    AuthorizationDetail,
+    ResourceRef,
+    SignedJWT,
+    SubjectKind,
+    SubjectRef,
+)
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTSigner
+from warehouse.jwt.profile import MAX_LIFETIME_SECONDS, valid_authorization_details
+
+
+@dataclass(frozen=True)
+class WarehouseJWTIssuerFactory:
+    """Immutable claim configuration shared by request-scoped issuers."""
+
+    issuer: str
+    audiences: Mapping[str, str]
+
+    def __post_init__(self):
+        if not isinstance(self.issuer, str) or not self.issuer:
+            raise ValueError("A JWT issuer is required")
+        if (
+            not isinstance(self.audiences, Mapping)
+            or not self.audiences
+            or any(
+                not isinstance(value, str) or not value
+                for pair in self.audiences.items()
+                for value in pair
+            )
+            or len(set(self.audiences.values())) != len(self.audiences)
+        ):
+            raise ValueError(
+                "JWT audiences must have nonempty names and distinct values"
+            )
+        object.__setattr__(self, "audiences", MappingProxyType(dict(self.audiences)))
+
+    @classmethod
+    def from_settings(cls, settings):
+        try:
+            return cls(
+                issuer=settings.get("warehouse.jwt.issuer"),
+                audiences={
+                    name: settings.get(f"warehouse.jwt.{name}_audience")
+                    for name in ("upload", "api")
+                },
+            )
+        except ValueError as exc:
+            raise ConfigurationError("Invalid JWT issuance configuration") from exc
+
+    def __call__(self, context, request):
+        return WarehouseJWTIssuer(
+            registry=request.find_service(IJWTRegistry, context=None),
+            signer=request.find_service(IJWTSigner, context=None),
+            config=self,
+        )
+
+
+@implementer(IJWTIssuer)
+class WarehouseJWTIssuer:
+    """Register a JTI in the caller's transaction and sign server-selected claims.
+
+    The caller is responsible for authorizing issuance.
+    """
+
+    enabled = True
+
+    def __init__(self, *, registry, signer, config: WarehouseJWTIssuerFactory):
+        self.registry = registry
+        self.signer = signer
+        self.config = config
+
+    def issue(
+        self,
+        *,
+        subject: SubjectRef,
+        audience: str,
+        authorization_details: tuple[AuthorizationDetail, ...],
+        lifetime: int = MAX_LIFETIME_SECONDS,
+        additional: dict | None = None,
+    ) -> SignedJWT:
+        if (
+            not isinstance(subject, SubjectRef)
+            or not isinstance(subject.kind, SubjectKind)
+            or not isinstance(subject.id, UUID)
+        ):
+            raise ValueError("A typed JWT subject with a UUID is required")
+        if not isinstance(audience, str) or audience not in self.config.audiences:
+            raise ValueError("Unknown JWT audience name")
+        if type(lifetime) is not int or not 0 < lifetime <= MAX_LIFETIME_SECONDS:
+            raise ValueError(
+                "JWT lifetime must be an integer between 1 and 300 seconds"
+            )
+
+        if not isinstance(authorization_details, tuple):
+            raise ValueError("Typed JWT authorization details are required")
+        details = []
+        for detail in authorization_details:
+            if not isinstance(detail, AuthorizationDetail) or not isinstance(
+                detail.actions, tuple
+            ):
+                raise ValueError("Typed JWT authorization details are required")
+            value = {"type": detail.type, "actions": list(detail.actions)}
+            if detail.resource is not None:
+                if not isinstance(detail.resource, ResourceRef) or not isinstance(
+                    detail.resource.id, UUID
+                ):
+                    raise ValueError("A typed JWT resource with a UUID is required")
+                value["identifier"] = f"{detail.resource.kind}:{detail.resource.id}"
+            details.append(value)
+        if not valid_authorization_details(details):
+            raise ValueError("Invalid JWT authorization details")
+
+        # Use the same integer NumericDate for the JWT and database expiration.
+        issued_at = datetime.now(UTC).replace(microsecond=0)
+        expires_at = issued_at + timedelta(seconds=lifetime)
+        token_id = self.registry.register(expires_at, additional=additional)
+        token = self.signer.sign(
+            {
+                "iss": self.config.issuer,
+                "aud": self.config.audiences[audience],
+                "sub": str(subject.id),
+                "subject_kind": subject.kind,
+                "jti": str(token_id),
+                "iat": int(issued_at.timestamp()),
+                "exp": int(expires_at.timestamp()),
+                "authorization_details": details,
+            }
+        )
+        return SignedJWT(token=token, jti=token_id, expires_at=expires_at)

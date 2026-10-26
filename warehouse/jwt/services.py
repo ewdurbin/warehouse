@@ -7,10 +7,53 @@ from uuid import UUID, uuid7
 from sqlalchemy import delete, exists, select
 from zope.interface import implementer
 
-from warehouse.jwt.claims import VerifiedJWT
-from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
+from warehouse.jwt.claims import AuthorizationDetail, SignedJWT, SubjectRef, VerifiedJWT
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTVerifier
+from warehouse.jwt.issuer import WarehouseJWTIssuerFactory
 from warehouse.jwt.models import IssuedJWT
 from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
+
+
+def jwt_verifier_factory(settings):
+    """Select the JWT verifier factory from trusted settings."""
+    if "warehouse.jwt.verification_keys" not in settings:
+        return DisabledJWTVerifier.create_service
+
+    # The verifier factory also imports DisabledJWTVerifier from this module.
+    from warehouse.jwt.verifier import WarehouseJWTVerifierFactory  # noqa: PLC0415
+
+    return WarehouseJWTVerifierFactory(settings)
+
+
+def jwt_issuer_factory(settings):
+    """Select the issuer when the deployment supplies signing settings."""
+    if not any(
+        name in settings
+        for name in ("warehouse.jwt.kms_key_id", "warehouse.jwt.signing_key_id")
+    ):
+        return DisabledJWTIssuer.create_service
+
+    return WarehouseJWTIssuerFactory.from_settings(settings)
+
+
+@implementer(IJWTIssuer)
+class DisabledJWTIssuer:
+    enabled = False
+
+    @classmethod
+    def create_service(cls, context, request):
+        return cls()
+
+    def issue(
+        self,
+        *,
+        subject: SubjectRef,
+        audience: str,
+        authorization_details: tuple[AuthorizationDetail, ...],
+        lifetime: int = MAX_LIFETIME_SECONDS,
+        additional: dict | None = None,
+    ) -> SignedJWT:
+        raise RuntimeError("JWT issuance is disabled")
 
 
 @implementer(IJWTVerifier)
@@ -92,14 +135,3 @@ class DatabaseJWTRegistry:
             .execution_options(synchronize_session=False)
         )
         return result.rowcount
-
-
-def jwt_verifier_factory(settings):
-    """Select the JWT verifier factory from trusted settings."""
-    if "warehouse.jwt.verification_keys" not in settings:
-        return DisabledJWTVerifier.create_service
-
-    # The verifier factory also imports DisabledJWTVerifier from this module.
-    from warehouse.jwt.verifier import WarehouseJWTVerifierFactory  # noqa: PLC0415
-
-    return WarehouseJWTVerifierFactory(settings)

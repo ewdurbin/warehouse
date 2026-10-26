@@ -6,9 +6,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from zope.interface import Interface
+from zope.interface import Attribute, Interface
 
-from warehouse.jwt.claims import VerifiedJWT
+from warehouse.jwt.claims import AuthorizationDetail, SignedJWT, SubjectRef, VerifiedJWT
+from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
 
 if TYPE_CHECKING:
     from warehouse.jwt.models import IssuedJWT
@@ -47,6 +48,30 @@ class IJWTSigner(Interface):
         The signer controls the algorithm, token type, and key ID. The caller
         validates the claims and handles token registration and authorization.
         Signing failures must propagate; never fall back to another signing key.
+        """
+
+
+class IJWTIssuer(Interface):
+    enabled = Attribute("Whether new JWTs can be issued with this configuration")
+
+    def issue(
+        *,
+        subject: SubjectRef,
+        audience: str,
+        authorization_details: tuple[AuthorizationDetail, ...],
+        lifetime: int = MAX_LIFETIME_SECONDS,
+        additional: dict | None = None,
+    ) -> SignedJWT:
+        """Register and sign a credential using trusted, authorized inputs.
+
+        The caller authorizes issuance and selects the subject, configured
+        audience name (not a client-supplied URI), and authorization details.
+        Lifetime is an integer number of seconds, at most five minutes.
+        Filtered per-issuance metadata stays in the registry, not the JWT.
+
+        Mutations participate in the caller's transaction: commit before handing
+        out the credential; roll back on failure. This service never commits.
+        Invalid inputs, disabled issuance, and infrastructure errors raise.
         """
 
 

@@ -565,3 +565,9 @@ tests and cannot be selected by deployment configuration.
 
 The upload route uses the upload audience. The echo and observation routes use
 the API audience; observation authorization still requires observer privileges.
+
+`IJWTIssuer` validates the profile, registers the ID and server-only metadata in
+the caller's transaction, and delegates signing to `IJWTSigner`. The caller must
+commit the transaction. Configuring both signing IDs enables issuance. Supplying
+only one fails startup. With neither ID, Warehouse can verify tokens using public
+keys alone.
