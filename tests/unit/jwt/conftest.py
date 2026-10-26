@@ -146,7 +146,6 @@ def registered_jti(jwt_registry, clock, claims):
 @pytest.fixture
 def jwt_settings(signing_keys):
     return {
-        "warehouse.jwt.enabled": True,
         "warehouse.jwt.issuer": ISSUER,
         "warehouse.jwt.upload_audience": UPLOAD_AUDIENCE,
         "warehouse.jwt.api_audience": API_AUDIENCE,
@@ -163,17 +162,7 @@ def jwt_settings(signing_keys):
 
 
 @pytest.fixture
-def jwt_enabled():
-    return True
-
-
-@pytest.fixture
-def make_request(
-    jwt_settings, jwt_enabled, user_service, mocker, clock, registered_jti, db_session
-):
-    jwt_settings.pop("warehouse.jwt.enabled")
-    if jwt_enabled is not None:
-        jwt_settings["warehouse.jwt.enabled"] = jwt_enabled
+def make_request(jwt_settings, user_service, mocker, clock, registered_jti, db_session):
     jwt_settings.update(
         {
             "docs.url": "https://docs.example",

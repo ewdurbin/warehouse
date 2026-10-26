@@ -33,13 +33,13 @@ from warehouse.predicates import AuthMethodsPredicate, JWTAudiencePredicate
 
 
 class TestWarehouseJWTVerifierFactory:
-    def test_enabled_without_configuration(self):
-        with pytest.raises(ConfigurationError):
-            jwt_verifier_factory({"warehouse.jwt.enabled": True})
+    def test_no_verification_keys(self, jwt_settings):
+        del jwt_settings["warehouse.jwt.verification_keys"]
+        assert jwt_verifier_factory(jwt_settings) == DisabledJWTVerifier.create_service
 
     @pytest.mark.parametrize(
         "setting",
-        ["issuer", "upload_audience", "api_audience", "verification_keys"],
+        ["issuer", "upload_audience", "api_audience"],
     )
     def test_missing_setting(self, jwt_settings, setting):
         del jwt_settings[f"warehouse.jwt.{setting}"]
@@ -56,6 +56,7 @@ class TestWarehouseJWTVerifierFactory:
             ("api_audience", [API_AUDIENCE]),
             ("api_audience", UPLOAD_AUDIENCE),
             ("verification_keys", {}),
+            ("verification_keys", None),
             ("verification_keys", []),
             ("verification_keys", "not a mapping"),
             ("verification_keys", {"current": None}),
