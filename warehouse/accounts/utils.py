@@ -25,12 +25,8 @@ tld_extractor = TLDExtract(suffix_list_urls=())  # Updated during image build
 @dataclass
 class UserContext:
     """
-    This class supports `MacaroonSecurityPolicy` in
-    `warehouse.macaroons.security_policy`.
-
-    It is a wrapper containing both a user associated with an authenticated request
-    and an optional corresponding Macaroon, if the authentication was via API token.
-    If the request was authenticated via login session, `macaroon` should be None.
+    An authenticated user and, for macaroon authentication, the corresponding
+    Macaroon. For session or JWT authentication, `macaroon` is None.
     """
 
     user: User
@@ -40,8 +36,7 @@ class UserContext:
 
     macaroon: Macaroon | None
     """
-    The Macaroon associated to the API token used to authenticate, if token
-    authentication was used.
+    The Macaroon used to authenticate, if authentication used a macaroon.
     """
 
     def __principals__(self) -> list[str]:

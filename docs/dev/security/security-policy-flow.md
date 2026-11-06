@@ -11,7 +11,7 @@ or deny a request.
 > `main`). The prose and diagrams name symbols, not paths, so moving a file only
 > means updating an entry here.
 
-- [`warehouse/accounts/__init__.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/__init__.py): registers the policy stack (`config.set_security_policy`)
+- [`warehouse/authnz/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/authnz/security_policy.py): registers the policy stack (`config.set_security_policy`)
 - [`warehouse/utils/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/utils/security_policy.py): `MultiSecurityPolicy`, `AuthenticationMethod`, `principals_for`, and the `PERMISSION_AUTH_METHODS` table with its permission/method gate
 - [`warehouse/accounts/security_policy.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/security_policy.py): `SessionSecurityPolicy`, `BasicAuthSecurityPolicy`, and the session authorization gates (verified email, two-factor)
 - [`warehouse/accounts/utils.py`](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/utils.py): `UserContext`
@@ -474,9 +474,9 @@ sequenceDiagram
 | Type | Meaning |
 |------|---------|
 | `MultiSecurityPolicy` | Tries policies in order, caches `(identity, policy)`, delegates `permits` |
-| `UserContext` | A `User` plus an optional `Macaroon`; `macaroon=None` means session auth |
-| `PublisherTokenContext` | An OIDC publisher plus signed claims (Trusted Publishing) |
-| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `API_KEY` (placeholder) |
+| `UserContext` | A `User` plus an optional `Macaroon`; sessions and user-backed JWTs have `macaroon=None` |
+| `PublisherTokenContext` | An OIDC publisher plus optional stored upstream claims (Trusted Publishing) |
+| `AuthenticationMethod` | `SESSION`, `BASIC_AUTH`, `MACAROON`, `JWT`, `API_KEY` (placeholder) |
 | `AuthMethodsPredicate` | Storage-only route tag listing which methods may authenticate the route |
 | `PERMISSION_AUTH_METHODS` | Which auth methods may grant which permissions (default: session-only) |
 | `WarehouseDenied` | A `Denied` subclass carrying a human message and a machine `reason` |
@@ -538,3 +538,10 @@ resolved user or publisher context. It matches each permission to its own
 optional project restriction without mixing actions from different details.
 Permission-wide grants do not bypass project context requirements or live ACLs.
 Unsupported identity kinds, permissions, and contexts are rejected.
+
+`JWTSecurityPolicy` accepts Bearer credentials on routes that explicitly allow
+JWT authentication. It verifies the token and registry entry before resolving the
+user or publisher. Authorization rechecks the token, registry, subject,
+authorization details, and live ACL. JWTs are not accepted via Basic or Token
+headers. `API_KEY` remains an unimplemented placeholder, and the default JWT
+verifier rejects all tokens.
