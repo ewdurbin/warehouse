@@ -501,3 +501,20 @@ sequenceDiagram
   ACL; the macaroon path layers the permission/method gate and caveat
   verification. Both can only turn an ACL `Allowed` into a denial, never widen
   it.
+
+## Warehouse JWT profile
+
+`warehouse.jwt` defines the JWT profile and verifier interface. The default
+verifier rejects all tokens.
+
+The wire profile uses `RS256`, the `pypi-access+jwt` type, canonical UUID
+subjects/JTIs, and at most five minutes between issuance and expiration.
+User and publisher subjects are explicitly distinguished. Authorization uses
+RFC 9396-based `authorization_details` with `type="warehouse"` and an explicit
+`actions` list. An optional `identifier="project:<UUID>"` narrows upload or
+observation permissions to a project; omission means no token-level resource
+restriction. Invalid or unknown restrictions must fail closed.
+
+Verification alone never establishes live identity, registry liveness, or
+authorization. Callers must also enforce credential-method boundaries and live
+resource ACLs; observation reporting still requires observer privileges.
