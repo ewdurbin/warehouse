@@ -532,3 +532,9 @@ cannot override signed claims or grant permissions.
 An hourly task deletes entries at least one maximum token lifetime after they
 expire. For a five-minute token, cleanup can occur ten minutes after issuance
 or later. Expiration is enforced on every liveness query, regardless of cleanup.
+
+The authorization adapter binds the verified subject kind and UUID to the
+resolved user or publisher context. It matches each permission to its own
+optional project restriction without mixing actions from different details.
+Permission-wide grants do not bypass project context requirements or live ACLs.
+Unsupported identity kinds, permissions, and contexts are rejected.
