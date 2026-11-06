@@ -522,3 +522,13 @@ resource ACLs; observation reporting still requires observer privileges.
 `WarehouseJWTVerifier` checks signatures with configured RSA public keys of at
 least 2048 bits and requires an exact issuer and audience. It rejects unsupported
 headers and claims, and invalid token lifetimes.
+
+JWT registry entries contain a UUIDv7 JTI, indexed UTC expiration, and
+registry-only `additional` metadata. Registration, fresh liveness queries, and
+revocation participate in the caller's transaction. Missing, expired, or deleted
+rows never establish a live credential; database errors propagate. Metadata
+cannot override signed claims or grant permissions.
+
+An hourly task deletes entries at least one maximum token lifetime after they
+expire. For a five-minute token, cleanup can occur ten minutes after issuance
+or later. Expiration is enforced on every liveness query, regardless of cleanup.
