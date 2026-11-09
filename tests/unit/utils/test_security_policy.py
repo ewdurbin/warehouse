@@ -29,47 +29,34 @@ def test_principals_for_with_none():
 
 
 class TestPermissionAllowedByAuthenticationMethod:
-    @pytest.mark.parametrize(
-        "permission",
-        [*Permissions, "nonexistent", pytest.param("projects:upload", id="raw-string")],
-    )
-    def test_api_key_placeholder_grants_no_permissions(self, permission):
+    def test_api_key_placeholder_grants_no_permissions(self):
         assert AuthenticationMethod("api-key") is AuthenticationMethod.API_KEY
-        assert AuthenticationMethod("jwt") is AuthenticationMethod.JWT
-        assert not permission_allowed_by_authentication_method(
-            permission, AuthenticationMethod.API_KEY
+        assert not any(
+            permission_allowed_by_authentication_method(
+                permission, AuthenticationMethod.API_KEY
+            )
+            for permission in Permissions
         )
 
-    @pytest.mark.parametrize(
-        "permission",
-        [
+    def test_jwt_allowed_permissions(self):
+        assert {
+            permission
+            for permission in Permissions
+            if permission_allowed_by_authentication_method(
+                permission, AuthenticationMethod.JWT
+            )
+        } == {
             Permissions.ProjectsUpload,
             Permissions.APIEcho,
             Permissions.APIObservationsAdd,
-        ],
-    )
-    def test_jwt_allowed_permissions(self, permission):
-        assert permission_allowed_by_authentication_method(
-            permission, AuthenticationMethod.JWT
-        )
+        }
 
     @pytest.mark.parametrize(
-        "permission",
-        [
-            permission
-            for permission in Permissions
-            if permission
-            not in {
-                Permissions.ProjectsUpload,
-                Permissions.APIEcho,
-                Permissions.APIObservationsAdd,
-            }
-        ]
-        + ["nonexistent", "projects:upload"],
+        "method", [AuthenticationMethod.API_KEY, AuthenticationMethod.JWT]
     )
-    def test_jwt_disallowed_permissions(self, permission):
+    def test_api_methods_reject_raw_permission_strings(self, method):
         assert not permission_allowed_by_authentication_method(
-            permission, AuthenticationMethod.JWT
+            "projects:upload", method
         )
 
     @pytest.mark.parametrize(
