@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import UUID, uuid7
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, select
 from zope.interface import implementer
 
 from warehouse.jwt.claims import VerifiedJWT
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
-from warehouse.jwt.profile import MAX_LIFETIME_SECONDS
 
 
 @implementer(IJWTVerifier)
@@ -25,8 +24,14 @@ class DisabledJWTVerifier:
         return None
 
 
+def _active_jwt_conditions(token_id: UUID):
+    return IssuedJWT.id == token_id, IssuedJWT.expires_at > datetime.now(UTC)
+
+
 @implementer(IJWTRegistry)
 class DatabaseJWTRegistry:
+    """Query PostgreSQL for liveness even when the session has cached the row."""
+
     def __init__(self, db_session):
         self.db = db_session
 
@@ -51,28 +56,16 @@ class DatabaseJWTRegistry:
         return token.id
 
     def get_active(self, token_id: UUID) -> IssuedJWT | None:
-        # Refresh the entry even if this session already loaded it.
         return self.db.scalar(
-            select(IssuedJWT)
-            .where(
-                IssuedJWT.id == token_id,
-                IssuedJWT.expires_at > datetime.now(UTC),
-            )
-            .execution_options(populate_existing=True)
+            select(IssuedJWT).where(*_active_jwt_conditions(token_id))
         )
 
     def is_active(self, token_id: UUID) -> bool:
-        # READ COMMITTED sees revocations committed before this query.
-        # Session.get() could return a cached row.
-        return bool(
+        return (
             self.db.scalar(
-                select(
-                    exists().where(
-                        IssuedJWT.id == token_id,
-                        IssuedJWT.expires_at > datetime.now(UTC),
-                    )
-                )
+                select(IssuedJWT.id).where(*_active_jwt_conditions(token_id))
             )
+            is not None
         )
 
     def revoke(self, token_id: UUID) -> None:
@@ -81,13 +74,3 @@ class DatabaseJWTRegistry:
             .where(IssuedJWT.id == token_id)
             .execution_options(synchronize_session=False)
         )
-
-    def delete_expired(self) -> int:
-        # Retain expired entries for one maximum token lifetime before cleanup.
-        cutoff = datetime.now(UTC) - timedelta(seconds=MAX_LIFETIME_SECONDS)
-        result = self.db.execute(
-            delete(IssuedJWT)
-            .where(IssuedJWT.expires_at <= cutoff)
-            .execution_options(synchronize_session=False)
-        )
-        return result.rowcount

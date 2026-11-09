@@ -1,29 +1,29 @@
 # SPDX-License-Identifier: Apache-2.0
 
-
 from celery.schedules import crontab
+from pyramid.request import Request, apply_request_extensions
 
-from warehouse.jwt import includeme
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
-from warehouse.jwt.services import (
-    DatabaseJWTRegistry,
-    DisabledJWTVerifier,
-)
+from warehouse.jwt.services import DatabaseJWTRegistry, DisabledJWTVerifier
 from warehouse.jwt.tasks import delete_expired_jwts
 
 
-def test_includeme(mocker):
-    config = mocker.Mock(
-        spec=["register_service_factory", "add_periodic_task", "registry"]
+def test_default_services_and_cleanup_schedule(app_config, db_session):
+    request = Request.blank("/")
+    request.registry = app_config.registry
+    request.db = db_session
+    apply_request_extensions(request)
+
+    registry = request.find_service(IJWTRegistry, context=None)
+    assert isinstance(registry, DatabaseJWTRegistry)
+    assert registry.db is db_session
+    assert isinstance(
+        request.find_service(IJWTVerifier, context=None), DisabledJWTVerifier
     )
-    config.registry.settings = {}
 
-    includeme(config)
-
-    assert config.register_service_factory.call_args_list == [
-        mocker.call(DisabledJWTVerifier.create_service, IJWTVerifier),
-        mocker.call(DatabaseJWTRegistry.create_service, IJWTRegistry),
-    ]
-    config.add_periodic_task.assert_called_once_with(
-        crontab(minute=0), delete_expired_jwts
+    task_name = app_config.task(delete_expired_jwts).name
+    schedule = app_config.registry["celery.app"].conf.beat_schedule
+    assert any(
+        entry["task"] == task_name and entry["schedule"] == crontab(minute=0)
+        for entry in schedule.values()
     )

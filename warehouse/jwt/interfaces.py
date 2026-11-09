@@ -56,6 +56,3 @@ class IJWTRegistry(Interface):
 
     def revoke(token_id: UUID) -> None:
         """Delete the entry if it exists. The caller authorizes revocation."""
-
-    def delete_expired() -> int:
-        """Delete and count entries at least one maximum lifetime past expiry."""
