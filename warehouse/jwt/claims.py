@@ -52,7 +52,6 @@ class VerifiedJWT:
     """Immutable claims from a token that passed verification.
 
     The caller checks the registry, resolves the subject, and authorizes access.
-    Verify the token again before a later permission check to catch expiration.
     """
 
     jti: UUID

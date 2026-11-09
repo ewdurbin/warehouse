@@ -3,7 +3,12 @@
 from uuid import UUID
 
 from warehouse.authnz import Permissions
-from warehouse.jwt.claims import AuthorizationType, ResourceKind
+from warehouse.jwt.claims import (
+    AuthorizationDetail,
+    AuthorizationType,
+    ResourceKind,
+    ResourceRef,
+)
 
 MEDIA_TYPE = "pypi-access+jwt"
 MAX_LIFETIME_SECONDS = 300
@@ -15,28 +20,32 @@ _ACTION_RESOURCES = {
 }
 
 
-def is_uuid(value) -> bool:
-    """Require the canonical string representation of a Warehouse ID."""
+def parse_uuid(value: object) -> UUID | None:
+    """Parse the canonical string representation of a Warehouse ID."""
     if not isinstance(value, str):
-        return False
+        return None
     try:
-        return str(UUID(value)) == value
+        parsed = UUID(value)
     except ValueError:
-        return False
+        return None
+    return parsed if str(parsed) == value else None
 
 
-def valid_authorization_details(details) -> bool:
-    """Check authorization details in the format used in the token."""
+def parse_authorization_details(
+    details: object,
+) -> tuple[AuthorizationDetail, ...] | None:
+    """Parse the claim, rejecting it if any authorization detail is invalid."""
     if not isinstance(details, list) or not details:
-        return False
+        return None
+    parsed = []
     for detail in details:
         if not isinstance(detail, dict) or set(detail) not in (
             {"type", "actions"},
             {"type", "actions", "identifier"},
         ):
-            return False
+            return None
         if detail["type"] != AuthorizationType.WAREHOUSE:
-            return False
+            return None
         actions = detail["actions"]
         if (
             not isinstance(actions, list)
@@ -46,15 +55,25 @@ def valid_authorization_details(details) -> bool:
                 for action in actions
             )
         ):
-            return False
+            return None
+        resource = None
         if "identifier" in detail:
             # Only an omitted identifier leaves the resource unrestricted.
             identifier = detail["identifier"]
             if not isinstance(identifier, str):
-                return False
-            kind, _, resource_id = identifier.partition(":")
-            if not is_uuid(resource_id) or any(
+                return None
+            kind, _, raw_id = identifier.partition(":")
+            resource_id = parse_uuid(raw_id)
+            if resource_id is None or any(
                 kind not in _ACTION_RESOURCES[action] for action in actions
             ):
-                return False
-    return True
+                return None
+            resource = ResourceRef(ResourceKind(kind), resource_id)
+        parsed.append(
+            AuthorizationDetail(
+                type=AuthorizationType.WAREHOUSE,
+                actions=tuple(Permissions(action) for action in actions),
+                resource=resource,
+            )
+        )
+    return tuple(parsed)

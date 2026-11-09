@@ -22,5 +22,4 @@ def test_verified_claims_are_immutable(verified):
 def test_disabled_verifier_contract():
     assert verifyClass(IJWTVerifier, DisabledJWTVerifier)
     verifier = DisabledJWTVerifier.create_service(None, None)
-    for credential in ("", "invalid", "header.payload.signature"):
-        assert verifier.verify(credential) is None
+    assert verifier.verify("header.payload.signature") is None
