@@ -53,7 +53,7 @@ class IJWTIssuer(Interface):
 
         The caller owns the transaction. Commit before handing out the token
         and roll back on failure. Raise if issuance is disabled, inputs are
-        invalid, or a service fails.
+        invalid, a service fails, or the token expires during signing.
         """
 
 

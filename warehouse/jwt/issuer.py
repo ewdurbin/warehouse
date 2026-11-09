@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from uuid import UUID
 
-from pyramid.exceptions import ConfigurationError
 from zope.interface import implementer
 
 from warehouse.jwt.claims import (
@@ -48,19 +47,6 @@ class WarehouseJWTIssuerFactory:
                 "JWT audiences must have nonempty names and distinct values"
             )
         object.__setattr__(self, "audiences", MappingProxyType(dict(self.audiences)))
-
-    @classmethod
-    def from_settings(cls, settings):
-        try:
-            return cls(
-                issuer=settings.get("warehouse.jwt.issuer"),
-                audiences={
-                    name: settings.get(f"warehouse.jwt.{name}_audience")
-                    for name in ("upload", "api")
-                },
-            )
-        except ValueError as exc:
-            raise ConfigurationError("Invalid JWT issuance configuration") from exc
 
     def __call__(self, context, request):
         return WarehouseJWTIssuer(
@@ -141,6 +127,8 @@ class WarehouseJWTIssuer:
                 "authorization_details": details,
             }
         )
+        if datetime.now(UTC) >= expires_at:
+            raise RuntimeError("JWT expired during signing")
         if len(token) > MAX_TOKEN_LENGTH:
             raise ValueError("JWT exceeds the maximum token length")
         return SignedJWT(token=token, jti=token_id, expires_at=expires_at)

@@ -22,23 +22,22 @@ from warehouse.utils.security_policy import AuthenticationMethod
 
 
 def jwt_issuer_factory(settings):
-    """Validate signing settings if either key ID is configured."""
-    if not any(
-        name in settings
-        for name in ("warehouse.jwt.kms_key_id", "warehouse.jwt.signing_key_id")
-    ):
-        return DisabledJWTIssuer.create_service
-
-    return WarehouseJWTIssuerFactory.from_settings(settings)
+    """Build the issuer factory with the configured issuer and audiences."""
+    try:
+        return WarehouseJWTIssuerFactory(
+            issuer=settings.get("warehouse.jwt.issuer"),
+            audiences={
+                name: settings.get(f"warehouse.jwt.{name}_audience")
+                for name in ("upload", "api")
+            },
+        )
+    except ValueError as exc:
+        raise ConfigurationError("Invalid JWT issuance configuration") from exc
 
 
 @implementer(IJWTIssuer)
 class DisabledJWTIssuer:
     enabled = False
-
-    @classmethod
-    def create_service(cls, context, request):
-        return cls()
 
     def issue(
         self,
