@@ -17,6 +17,7 @@ from warehouse.jwt.claims import (
 from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.profile import (
     MAX_LIFETIME_SECONDS,
+    MAX_TOKEN_LENGTH,
     MEDIA_TYPE,
     parse_authorization_details,
     parse_uuid,
@@ -85,12 +86,6 @@ class WarehouseJWTVerifier:
                 options={
                     "require": sorted(_REQUIRED_CLAIMS),
                     "verify_signature": True,
-                    "verify_iss": True,
-                    "verify_aud": True,
-                    "verify_sub": True,
-                    "verify_iat": True,
-                    "verify_exp": True,
-                    "verify_nbf": True,
                     "strict_aud": True,
                 },
             )
@@ -113,6 +108,8 @@ class WarehouseJWTVerifier:
         return claims
 
     def verify(self, token: str) -> VerifiedJWT | None:
+        if len(token) > MAX_TOKEN_LENGTH or not token.isascii() or "=" in token:
+            return None
         if (claims := self._claims(token)) is None:
             return None
         jti = parse_uuid(claims["jti"])

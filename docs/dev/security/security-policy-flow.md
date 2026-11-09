@@ -521,4 +521,5 @@ resource ACLs; observation reporting still requires observer privileges.
 
 `WarehouseJWTVerifier` checks signatures with configured RSA public keys of at
 least 2048 bits and requires an exact issuer and audience. It rejects unsupported
-headers and claims, and invalid token lifetimes.
+headers and claims, and invalid token lifetimes. It checks that the compact token
+is unpadded ASCII and at most 8 KiB before parsing it.

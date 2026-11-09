@@ -12,6 +12,7 @@ from warehouse.jwt.claims import (
 
 MEDIA_TYPE = "pypi-access+jwt"
 MAX_LIFETIME_SECONDS = 300
+MAX_TOKEN_LENGTH = 8 * 1024
 
 _ACTION_RESOURCES = {
     Permissions.ProjectsUpload: (ResourceKind.PROJECT,),
