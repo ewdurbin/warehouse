@@ -5,56 +5,47 @@ from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
     AuthorizationType,
     ResourceKind,
+    ResourceRef,
     SubjectKind,
+    SubjectRef,
     VerifiedJWT,
 )
 from warehouse.oidc.utils import PublisherTokenContext
 from warehouse.packaging.models import Project
 
 
-def permits(verified: VerifiedJWT, identity, context, permission) -> bool:
+def permits(
+    verified: VerifiedJWT,
+    identity: UserContext | PublisherTokenContext,
+    context: object,
+    permission: Permissions,
+) -> bool:
     """Check that the token matches the identity, permission, and resource.
 
     The caller verifies the token, checks the registry and allowed method, and
     enforces the resource ACL.
     """
-    if verified.subject.kind == SubjectKind.USER:
-        if (
-            not isinstance(identity, UserContext)
-            or identity.macaroon is not None
-            or str(identity.user.id) != str(verified.subject.id)
-        ):
-            return False
-    elif verified.subject.kind == SubjectKind.PUBLISHER:
-        if not isinstance(identity, PublisherTokenContext) or str(
-            identity.publisher.id
-        ) != str(verified.subject.id):
-            return False
+    if isinstance(identity, UserContext) and identity.macaroon is None:
+        subject = SubjectRef(SubjectKind.USER, identity.user.id)
+    elif isinstance(identity, PublisherTokenContext):
+        subject = SubjectRef(SubjectKind.PUBLISHER, identity.publisher.id)
     else:
-        # Reject unknown subject kinds if a caller bypasses profile validation.
-        return False  # type: ignore[unreachable]
-
-    if not isinstance(permission, Permissions):
         return False
-    # Uploads and observations require a project even when the token names none.
+
+    if verified.subject != subject or not isinstance(permission, Permissions):
+        return False
+
+    resource = None
     if permission in (Permissions.ProjectsUpload, Permissions.APIObservationsAdd):
         if not isinstance(context, Project):
             return False
+        resource = ResourceRef(ResourceKind.PROJECT, context.id)
     elif permission != Permissions.APIEcho:
         return False
 
-    for detail in verified.authorization_details:
-        if (
-            detail.type != AuthorizationType.WAREHOUSE
-            or permission not in detail.actions
-        ):
-            continue
-        if detail.resource is None:
-            return True
-        if (
-            permission in (Permissions.ProjectsUpload, Permissions.APIObservationsAdd)
-            and detail.resource.kind == ResourceKind.PROJECT
-            and context.id == detail.resource.id
-        ):
-            return True
-    return False
+    return any(
+        detail.type == AuthorizationType.WAREHOUSE
+        and permission in detail.actions
+        and (detail.resource is None or detail.resource == resource)
+        for detail in verified.authorization_details
+    )
