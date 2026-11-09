@@ -188,30 +188,31 @@ route itself.
 returns `True`, so it never affects which route matches. It exists purely so the
 security policies can read it back off `request.matched_route.predicates` via
 `auth_methods_for_route(route)`. A route opts in by passing `auth_methods` to
-`add_route` or `add_legacy_action_route`. The forklift upload, for example,
-accepts basic-auth (for the `__token__` pass-through) and macaroons:
+`add_route` or `add_legacy_action_route`. The forklift upload route allows
+macaroons, including the Basic `__token__` pass-through, and JWTs.
 
 ```python
 config.add_legacy_action_route(
     "forklift.legacy.file_upload",
     "file_upload",
-    auth_methods={"basic-auth", "macaroon"},
+    auth_methods={"basic-auth", "macaroon", "jwt"},
+    jwt_audience="upload",
     domain=forklift,
 )
 ```
 
-A token-only API route passes `auth_methods={"macaroon"}` instead.
+The danger API routes allow macaroons and JWTs and set `jwt_audience="api"`.
 Listing `basic-auth` without `macaroon` raises a `ConfigurationError`, since
 the only credential basic-auth lets through is a macaroon.
 
-Each policy consults the predicate during `identity()` and bows out when its
-method is not in the route's allowed set:
+Each policy consults the predicate during `identity()`. JWT authentication also
+requires a route audience and configured verification keys.
 
 | Route declares | Session engages? | BasicAuth engages? | Macaroon engages? | JWT engages? |
 |----------------|------------------|--------------------|-------------------|--------------|
 | *(no `auth_methods`)* | yes | no (needs explicit opt-in) | yes | no |
-| `{"basic-auth", "macaroon"}` (forklift upload) | no | yes | yes | no |
-| `{"macaroon"}` (token-only API) | no | no | yes | no |
+| `{"basic-auth", "macaroon", "jwt"}` (forklift upload) | no | yes | yes | yes |
+| `{"macaroon", "jwt"}` (danger API) | no | no | yes | yes |
 | `{"api-key"}` (reserved placeholder) | no | no | no | no |
 | `{"jwt"}` (JWT-only) | no | no | no | yes |
 

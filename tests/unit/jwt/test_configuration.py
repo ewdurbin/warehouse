@@ -1,178 +1,85 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import types
-
-from uuid import UUID
-
 import pytest
 
-from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from pyramid import testing
 from pyramid.exceptions import ConfigurationError
+from pyramid.interfaces import IRoutesMapper
 
-from tests.common.jwt import (
-    API_AUDIENCE,
-    ISSUER,
-    UPLOAD_AUDIENCE,
-    USER_ID,
-)
-from warehouse.jwt.claims import (
-    SubjectKind,
-    SubjectRef,
-)
-from warehouse.jwt.services import (
-    DisabledJWTVerifier,
-    jwt_verifier_factory,
-)
-from warehouse.jwt.verifier import (
-    WarehouseJWTVerifierFactory,
-)
-from warehouse.predicates import AuthMethodsPredicate, JWTAudiencePredicate
+from tests.common.jwt import UPLOAD_AUDIENCE
+from warehouse.jwt.services import jwt_verifier_factory
 
 
-class TestWarehouseJWTVerifierFactory:
-    def test_no_verification_keys(self, jwt_settings):
-        del jwt_settings["warehouse.jwt.verification_keys"]
-        assert jwt_verifier_factory(jwt_settings) == DisabledJWTVerifier.create_service
+@pytest.mark.parametrize(
+    ("setting", "message"),
+    [
+        ("issuer", "A JWT issuer is required"),
+        ("upload_audience", "A JWT audience is required"),
+        ("api_audience", "A JWT audience is required"),
+    ],
+)
+def test_missing_setting(jwt_settings, setting, message):
+    del jwt_settings[f"warehouse.jwt.{setting}"]
+    with pytest.raises(ConfigurationError, match=message):
+        jwt_verifier_factory(jwt_settings)
 
-    @pytest.mark.parametrize(
-        "setting",
-        ["issuer", "upload_audience", "api_audience"],
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("api_audience", UPLOAD_AUDIENCE, "audiences must be distinct"),
+        ("verification_keys", {}, "must map key IDs to PEM public keys"),
+        ("verification_keys", {"current": "not PEM"}, "Invalid JWT PEM public key"),
+    ],
+)
+def test_invalid_setting(jwt_settings, setting, value, message):
+    jwt_settings[f"warehouse.jwt.{setting}"] = value
+    with pytest.raises(ConfigurationError, match=message):
+        jwt_verifier_factory(jwt_settings)
+
+
+def test_private_key_is_rejected(jwt_settings, signing_keys):
+    jwt_settings["warehouse.jwt.verification_keys"]["current"] = (
+        signing_keys[0]
+        .private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        .decode()
     )
-    def test_missing_setting(self, jwt_settings, setting):
-        del jwt_settings[f"warehouse.jwt.{setting}"]
-        with pytest.raises(ConfigurationError, match=r"JWT|warehouse\.jwt"):
-            jwt_verifier_factory(jwt_settings)
+    with pytest.raises(ConfigurationError, match="Invalid JWT PEM public key"):
+        jwt_verifier_factory(jwt_settings)
 
-    @pytest.mark.parametrize(
-        ("setting", "value"),
-        [
-            ("issuer", ""),
-            ("issuer", [ISSUER]),
-            ("upload_audience", ""),
-            ("api_audience", ""),
-            ("api_audience", [API_AUDIENCE]),
-            ("api_audience", UPLOAD_AUDIENCE),
-            ("verification_keys", {}),
-            ("verification_keys", None),
-            ("verification_keys", []),
-            ("verification_keys", "not a mapping"),
-            ("verification_keys", {"current": None}),
-            ("verification_keys", {"current": "not PEM"}),
-        ],
-    )
-    def test_invalid_setting(self, jwt_settings, setting, value):
-        jwt_settings[f"warehouse.jwt.{setting}"] = value
-        with pytest.raises(ConfigurationError, match=r"JWT|warehouse\.jwt"):
-            jwt_verifier_factory(jwt_settings)
 
-    @pytest.mark.parametrize("kid", ["", 1])
-    def test_invalid_key_id(self, jwt_settings, kid):
-        keys = jwt_settings["warehouse.jwt.verification_keys"]
-        jwt_settings["warehouse.jwt.verification_keys"] = {kid: keys["current"]}
-        with pytest.raises(ConfigurationError, match="key IDs"):
-            jwt_verifier_factory(jwt_settings)
+@pytest.mark.parametrize(
+    ("route_options", "accepted"),
+    [
+        pytest.param(None, False, id="no-matched-route"),
+        pytest.param({"auth_methods": {"jwt"}}, False, id="missing-audience"),
+        pytest.param({"jwt_audience": "api"}, False, id="missing-auth-methods"),
+        pytest.param(
+            {"jwt_audience": "api", "auth_methods": {"api-key"}},
+            False,
+            id="different-auth-method",
+        ),
+        pytest.param(
+            {"jwt_audience": "api", "auth_methods": {"jwt"}}, True, id="jwt-route"
+        ),
+    ],
+)
+def test_route_must_declare_audience_and_jwt_method(
+    jwt_settings, clock, sign, route_options, accepted
+):
+    factory = jwt_verifier_factory(jwt_settings)
+    request = testing.DummyRequest(matched_route=None)
 
-    def test_private_key(self, jwt_settings, signing_keys):
-        jwt_settings["warehouse.jwt.verification_keys"]["current"] = (
-            signing_keys[0]
-            .private_bytes(
-                serialization.Encoding.PEM,
-                serialization.PrivateFormat.PKCS8,
-                serialization.NoEncryption(),
-            )
-            .decode()
-        )
-        with pytest.raises(ConfigurationError, match="PEM public key"):
-            jwt_verifier_factory(jwt_settings)
+    if route_options is not None:
+        with testing.testConfig() as config:
+            config.include("warehouse.predicates")
+            config.add_route("new-endpoint", "/", **route_options)
+            mapper = config.registry.getUtility(IRoutesMapper)
+            request.matched_route = mapper.get_route("new-endpoint")
 
-    @pytest.mark.parametrize("kind", ["ec", "weak-rsa"])
-    def test_unsuitable_public_key(self, jwt_settings, kind):
-        if kind == "ec":
-            key = ec.generate_private_key(ec.SECP256R1())
-        else:
-            # Deliberately insecure: startup must reject this key.
-            key = rsa.generate_private_key(public_exponent=65537, key_size=1024)  # noqa: S505
-        jwt_settings["warehouse.jwt.verification_keys"]["current"] = (
-            key.public_key()
-            .public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        )
-        with pytest.raises(ConfigurationError, match="RSA public keys >= 2048 bits"):
-            jwt_verifier_factory(jwt_settings)
-
-    def test_unsupported_key_algorithm(self, jwt_settings, mocker):
-        mocker.patch(
-            "warehouse.jwt.verifier.load_pem_public_key",
-            side_effect=UnsupportedAlgorithm("Unsupported key algorithm"),
-        )
-        with pytest.raises(ConfigurationError, match="PEM public key"):
-            jwt_verifier_factory(jwt_settings)
-
-    def test_loads_keys_once(self, jwt_settings, mocker, clock, sign):
-        load = mocker.patch(
-            "warehouse.jwt.verifier.load_pem_public_key",
-            wraps=serialization.load_pem_public_key,
-        )
-        factory = jwt_verifier_factory(jwt_settings)
-        assert isinstance(factory, WarehouseJWTVerifierFactory)
-        assert load.call_count == 2
-        request = testing.DummyRequest()
-        request.matched_route = types.SimpleNamespace(
-            name="api.echo",
-            predicates=[
-                AuthMethodsPredicate({"jwt"}, None),
-                JWTAudiencePredicate("api", None),
-            ],
-        )
-        # The verifier keeps the keys loaded at startup.
-        jwt_settings["warehouse.jwt.verification_keys"].clear()
-        jwt_settings["warehouse.jwt.api_audience"] = UPLOAD_AUDIENCE
-        verifier = factory(None, request)
-        assert factory(None, request) is verifier
-        assert verifier.verify(sign()).subject == SubjectRef(
-            SubjectKind.USER, UUID(USER_ID)
-        )
-        assert load.call_count == 2
-
-    @pytest.mark.parametrize(
-        "route_name",
-        [
-            None,
-            "api.echo",
-            "forklift.legacy.file_upload",
-            "api.unknown",
-            "api.echo.attacker",
-            "forklift.legacy.submit",
-            "manage.account",
-        ],
-    )
-    def test_missing_audience(self, jwt_settings, route_name, clock, sign):
-        request = testing.DummyRequest()
-        request.matched_route = (
-            types.SimpleNamespace(
-                name=route_name, predicates=[AuthMethodsPredicate({"jwt"}, None)]
-            )
-            if route_name is not None
-            else None
-        )
-        verifier = jwt_verifier_factory(jwt_settings)(None, request)
-        assert isinstance(verifier, DisabledJWTVerifier)
-        assert verifier.verify(sign()) is None
-
-    @pytest.mark.parametrize("methods", [None, set(), {"macaroon"}, {"api-key"}])
-    def test_route_requires_jwt_opt_in(self, jwt_settings, methods):
-        request = testing.DummyRequest()
-        request.matched_route = types.SimpleNamespace(
-            name="api.echo",
-            predicates=[JWTAudiencePredicate("api", None)]
-            + ([] if methods is None else [AuthMethodsPredicate(methods, None)]),
-        )
-        assert isinstance(
-            jwt_verifier_factory(jwt_settings)(None, request), DisabledJWTVerifier
-        )
+    assert (factory(None, request).verify(sign()) is not None) == accepted

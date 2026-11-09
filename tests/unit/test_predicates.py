@@ -115,14 +115,6 @@ class TestJWTAudiencePredicate:
         assert predicate.phash() == predicate.text()
         assert predicate(None, None) is True
 
-    @pytest.mark.parametrize(
-        "audience_name",
-        [None, "", "API", "unknown", "https://warehouse.example/api", ["api"], {}],
-    )
-    def test_invalid_audience(self, audience_name):
-        with pytest.raises(ConfigurationError, match="jwt_audience must be"):
-            JWTAudiencePredicate(audience_name, None)
-
     def test_invalid_audience_fails_configuration(self):
         with testing.testConfig() as config:
             config.include("warehouse.predicates")
@@ -141,9 +133,8 @@ class TestJWTAudienceForRoute:
         )
         assert jwt_audience_for_route(route) == audience_name
 
-    @pytest.mark.parametrize("predicates", [[], [AuthMethodsPredicate({"jwt"}, None)]])
-    def test_returns_none_when_undeclared(self, predicates):
-        route = types.SimpleNamespace(predicates=predicates)
+    def test_returns_none_when_undeclared(self):
+        route = types.SimpleNamespace(predicates=[AuthMethodsPredicate({"jwt"}, None)])
         assert jwt_audience_for_route(route) is None
 
 

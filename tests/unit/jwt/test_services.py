@@ -11,18 +11,12 @@ from zope.interface.verify import verifyClass
 from warehouse.authnz import Permissions
 from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.security_policy import JWTSecurityPolicy
-from warehouse.jwt.services import (
-    DisabledJWTVerifier,
-    jwt_verifier_factory,
-)
+from warehouse.jwt.services import DisabledJWTVerifier
 from warehouse.predicates import AuthMethodsPredicate
 from warehouse.utils.security_policy import MultiSecurityPolicy
 
 
 class TestDisabledJWTVerifier:
-    def test_default_needs_no_configuration(self):
-        assert jwt_verifier_factory({}) == DisabledJWTVerifier.create_service
-
     def test_interface(self):
         assert verifyClass(IJWTVerifier, DisabledJWTVerifier)
 

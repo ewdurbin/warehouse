@@ -9,10 +9,10 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from freezegun import freeze_time
-from pyramid import testing
 from pyramid.interfaces import IRoutesMapper
 from pyramid.request import Request, apply_request_extensions
 
+from tests.common.constants import REMOTE_ADDR
 from tests.common.jwt import (
     API_AUDIENCE,
     ISSUER,
@@ -22,7 +22,7 @@ from tests.common.jwt import (
     UPLOAD_AUDIENCE,
     USER_ID,
 )
-from warehouse.accounts.interfaces import IUserService
+from tests.conftest import get_app_config
 from warehouse.authnz import Permissions
 from warehouse.jwt.claims import (
     AuthorizationDetail,
@@ -33,10 +33,7 @@ from warehouse.jwt.claims import (
     SubjectRef,
     VerifiedJWT,
 )
-from warehouse.jwt.security_policy import JWTSecurityPolicy
 from warehouse.jwt.verifier import WarehouseJWTVerifier
-from warehouse.routes import includeme as include_routes
-from warehouse.utils.security_policy import MultiSecurityPolicy
 
 
 @pytest.fixture
@@ -162,49 +159,20 @@ def jwt_settings(signing_keys):
 
 
 @pytest.fixture
-def make_request(jwt_settings, user_service, mocker, clock, registered_jti, db_session):
-    jwt_settings.update(
-        {
-            "docs.url": "https://docs.example",
-            "files.url": "https://files.example/{path}",
-            "userdocs.domain": "https://docs.example.com",
-        }
-    )
-    with testing.testConfig(settings=jwt_settings) as config:
-        config.include("pyramid_services")
-        config.include("warehouse.predicates")
-        config.include("warehouse.legacy.action_routing")
-        config.include("warehouse.forklift")
-        # Use Warehouse's route declarations so tests see the actual audience
-        # and authentication settings.
-        route_config = mocker.Mock()
-        route_config.get_settings.return_value = config.get_settings()
-        route_config.registry = config.registry
-        route_config.add_route = config.add_route
-        include_routes(route_config)
-        for audience_name in ("api", "upload"):
-            config.add_route(
-                f"new-endpoint.{audience_name}",
-                f"/audience-test/{audience_name}",
-                auth_methods={"jwt"},
-                jwt_audience=audience_name,
-            )
-        config.add_directive("add_periodic_task", mocker.Mock())
-        config.include("warehouse.jwt")
-        config.register_service(user_service, IUserService)
-        config.set_security_policy(MultiSecurityPolicy([JWTSecurityPolicy()]))
-        config.commit()
-        mapper = config.registry.getUtility(IRoutesMapper)
+def make_request(database, jwt_settings, registered_jti, db_session):
+    config = get_app_config(database, jwt_settings)
+    mapper = config.registry.getUtility(IRoutesMapper)
 
-        def make_request(path, token):
-            request = Request.blank(path)
-            request.registry = config.registry
-            apply_request_extensions(request)
-            request.db = db_session
-            request.headers["Authorization"] = f"Bearer {token}"
-            match = mapper(request)
-            request.matched_route = match["route"]
-            request.matchdict = match["match"]
-            return request
+    def make_request(path, token):
+        request = Request.blank(path, environ={"REMOTE_ADDR": REMOTE_ADDR})
+        request.registry = config.registry
+        apply_request_extensions(request)
+        request.db = db_session
+        request.headers["Authorization"] = f"Bearer {token}"
+        match = mapper(request)
+        request.matched_route = match["route"]
+        request.matchdict = match["match"]
+        return request
 
-        yield make_request
+    yield make_request
+    config.registry["sqlalchemy.engine"].dispose()
