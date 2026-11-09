@@ -79,13 +79,20 @@ class KMSJWTSignerService(_JWTSignerService):
             or not isinstance(verification_keys.get(key_id), str)
         ):
             raise ConfigurationError(
-                "JWT signing requires a KMS key and a key ID in verification_keys"
+                "JWT signing requires a KMS key and a key ID in JWT_VERIFICATION_KEYS. "
+                "Check JWT_KMS_KEY_ID and JWT_SIGNING_KEY_ID."
             )
 
         try:
             expected_public_key = load_pem_public_key(
                 verification_keys[key_id].encode("utf-8")
             )
+        except (ValueError, UnsupportedAlgorithm) as exc:
+            raise ConfigurationError(
+                f"Invalid PEM public key in JWT_VERIFICATION_KEYS for {key_id!r}"
+            ) from exc
+
+        try:
             client = boto3.session.Session(
                 region_name=settings.get("aws.region")
             ).client(
@@ -97,28 +104,45 @@ class KMSJWTSignerService(_JWTSignerService):
                 ),
             )
             response = client.get_public_key(KeyId=kms_key_id)
+        except (BotoCoreError, ClientError, ValueError) as exc:
+            raise ConfigurationError(
+                f"KMS GetPublicKey failed for JWT_KMS_KEY_ID {kms_key_id!r}"
+            ) from exc
+
+        try:
             key_arn = response["KeyId"]
             public_key = load_der_public_key(response["PublicKey"])
-            if (
-                not isinstance(key_arn, str)
-                or not key_arn.startswith("arn:")
-                or ":key/" not in key_arn
-                or response.get("KeyUsage") != "SIGN_VERIFY"
-                or KMS_SIGNING_ALGORITHM not in response.get("SigningAlgorithms", ())
-                or not isinstance(public_key, RSAPublicKey)
-                or public_key.key_size < 2048
-                or public_key != expected_public_key
-            ):
-                raise ValueError("KMS key does not match the JWT signing configuration")
-        except (
-            BotoCoreError,
-            ClientError,
-            KeyError,
-            TypeError,
-            ValueError,
-            UnsupportedAlgorithm,
-        ) as exc:
-            raise ConfigurationError("Invalid JWT signing configuration") from exc
+            supports_rs256 = KMS_SIGNING_ALGORITHM in response.get(
+                "SigningAlgorithms", ()
+            )
+        except (KeyError, TypeError, ValueError, UnsupportedAlgorithm) as exc:
+            raise ConfigurationError(
+                f"Invalid KMS GetPublicKey response for JWT_KMS_KEY_ID {kms_key_id!r}"
+            ) from exc
+
+        if (
+            not isinstance(key_arn, str)
+            or not key_arn.startswith("arn:")
+            or ":key/" not in key_arn
+        ):
+            raise ConfigurationError(
+                f"KMS GetPublicKey returned an invalid key ARN for {kms_key_id!r}"
+            )
+        if (
+            response.get("KeyUsage") != "SIGN_VERIFY"
+            or not supports_rs256
+            or not isinstance(public_key, RSAPublicKey)
+            or public_key.key_size < 2048
+        ):
+            raise ConfigurationError(
+                f"KMS key {kms_key_id!r} must be a SIGN_VERIFY key with an RSA "
+                f"public key of at least 2048 bits and support {KMS_SIGNING_ALGORITHM}"
+            )
+        if public_key != expected_public_key:
+            raise ConfigurationError(
+                f"KMS public key for {kms_key_id!r} differs from "
+                f"JWT_VERIFICATION_KEYS entry {key_id!r}"
+            )
 
         jws = jwt.PyJWS(algorithms=[])
         jws.register_algorithm("RS256", _KMSRS256Algorithm(client, key_arn))

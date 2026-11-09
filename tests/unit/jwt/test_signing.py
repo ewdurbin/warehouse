@@ -88,7 +88,7 @@ def test_test_signer_cannot_run_outside_tests(signing_keys, monkeypatch):
 
 
 def test_kms_signing_and_rotation(
-    kms_stubber, signing_settings, signing_keys, claims, clock
+    kms_stubber, signing_settings, signing_keys, claims, headers, sign, clock
 ):
     current_key, next_key = signing_keys
     next_settings = signing_settings | {
@@ -98,8 +98,9 @@ def test_kms_signing_and_rotation(
             "next": signing_settings["warehouse.jwt.verification_keys"]["previous"],
         },
     }
-    current_token = JWTTestSigner(key_id="current", key=current_key).sign(claims)
-    next_token = JWTTestSigner(key_id="next", key=next_key).sign(claims)
+    current_token = sign()
+    next_token = sign(header={**headers, "kid": "next"}, key=next_key)
+    # The alias points to the next key by the time the second signer starts.
     kms_stubber.add_response(
         "get_public_key",
         public_key_response(CURRENT_ARN, current_key),
@@ -136,19 +137,19 @@ def test_incomplete_signing_configuration(signing_settings, setting):
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "value", "message"),
     [
-        ("KeyId", KMS_ALIAS),
-        ("KeyUsage", "ENCRYPT_DECRYPT"),
-        ("SigningAlgorithms", ["RSASSA_PSS_SHA_256"]),
+        ("KeyId", KMS_ALIAS, "invalid key ARN"),
+        ("KeyUsage", "ENCRYPT_DECRYPT", "must be a SIGN_VERIFY key"),
+        ("SigningAlgorithms", ["RSASSA_PSS_SHA_256"], KMS_SIGNING_ALGORITHM),
     ],
 )
 def test_rejects_incompatible_kms_key(
-    kms_stubber, signing_settings, signing_keys, field, value
+    kms_stubber, signing_settings, signing_keys, field, value, message
 ):
     response = public_key_response(CURRENT_ARN, signing_keys[0]) | {field: value}
     kms_stubber.add_response("get_public_key", response, {"KeyId": KMS_ALIAS})
-    with pytest.raises(ConfigurationError, match="JWT signing configuration"):
+    with pytest.raises(ConfigurationError, match=message):
         KMSJWTSignerService.from_settings(signing_settings)
 
 
@@ -158,22 +159,37 @@ def test_rejects_mismatched_public_key(kms_stubber, signing_settings, signing_ke
         public_key_response(CURRENT_ARN, signing_keys[1]),
         {"KeyId": KMS_ALIAS},
     )
-    with pytest.raises(ConfigurationError, match="JWT signing configuration"):
+    with pytest.raises(
+        ConfigurationError, match="differs from JWT_VERIFICATION_KEYS entry 'current'"
+    ):
         KMSJWTSignerService.from_settings(signing_settings)
 
 
+def test_public_key_lookup_error_identifies_kms_call(kms_stubber, signing_settings):
+    kms_stubber.add_client_error(
+        "get_public_key",
+        service_error_code="AccessDeniedException",
+        expected_params={"KeyId": KMS_ALIAS},
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match=f"KMS GetPublicKey failed for JWT_KMS_KEY_ID '{KMS_ALIAS}'",
+    ) as error:
+        KMSJWTSignerService.from_settings(signing_settings)
+    assert isinstance(error.value.__cause__, ClientError)
+
+
 def test_kms_signing_error_propagates(
-    kms_stubber, signing_settings, signing_keys, claims
+    kms_stubber, signing_settings, signing_keys, claims, sign
 ):
     key = signing_keys[0]
-    token = JWTTestSigner(key_id="current", key=key).sign(claims)
     kms_stubber.add_response(
         "get_public_key", public_key_response(CURRENT_ARN, key), {"KeyId": KMS_ALIAS}
     )
     kms_stubber.add_client_error(
         "sign",
         service_error_code="KMSInternalException",
-        expected_params=sign_request(token, CURRENT_ARN),
+        expected_params=sign_request(sign(), CURRENT_ARN),
     )
     signer = KMSJWTSignerService.from_settings(signing_settings)
     with pytest.raises(ClientError, match="KMSInternalException"):

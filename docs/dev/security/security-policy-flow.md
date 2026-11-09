@@ -570,5 +570,12 @@ signature uses `RSASSA_PKCS1_V1_5_SHA_256`; the private key never enters Warehou
 Verification remains local. `TestJWTSignerService` signs with an ephemeral key in
 tests and cannot be selected by deployment configuration.
 
+For a rolling rotation, publish the new public key under a new JWT key ID and
+reload all verifiers with both keys. Then deploy the new `JWT_SIGNING_KEY_ID`
+and set `JWT_KMS_KEY_ID` to the new key's ARN or an alias dedicated to that key.
+If a shared alias moves, an issuer that restarts with the old key ID will fail
+the public key check. Once the last issuer stops using the old key, keep its
+public key until all tokens it signed have expired.
+
 The upload route uses the upload audience. The echo and observation routes use
 the API audience; observation authorization still requires observer privileges.
