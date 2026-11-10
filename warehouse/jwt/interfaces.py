@@ -88,5 +88,8 @@ class IJWTRegistry(Interface):
         authorization details and the resource ACL.
         """
 
-    def revoke(token_id: UUID) -> None:
-        """Delete the entry if it exists. The caller authorizes revocation."""
+    def revoke(token_id: UUID) -> bool:
+        """Delete an unexpired entry and return whether it was deleted.
+
+        The caller authorizes revocation.
+        """

@@ -544,13 +544,11 @@ def burn_oidc_issued_token(request: Request):
     Downstream integrators can call this endpoint to expedite the invalidation of a
     Trusted Publishing-issued token.
 
-    Unlike our other Trusted Publishing APIs, this API only ever returns an
-    HTTP Accepted (indicating receipt, but not communicating the outcome).
+    HTTP Accepted acknowledges receipt of the burn request.
     """
 
     try:
-        payload = BurnPayload.model_validate_json(request.body)
-        unverified_macaroon = payload.token
+        token = BurnPayload.model_validate_json(request.body).token
     except ValidationError:
         request.metrics.increment(
             "warehouse.oidc.burn_oidc_issued_token",
@@ -559,8 +557,8 @@ def burn_oidc_issued_token(request: Request):
         return _accepted(request=request)
 
     # Use the compact JWT format to choose the verifier.
-    if payload.token.count(".") == 2:
-        return _burn_jwt(payload.token, request)
+    if token.count(".") == 2:
+        return _burn_jwt(token, request)
 
     macaroon_service: DatabaseMacaroonService = request.find_service(
         IMacaroonService, context=None
@@ -573,7 +571,7 @@ def burn_oidc_issued_token(request: Request):
         # from spoofing a macaroon if they know just the UUID) and we check that the
         # macaroon corresponds to an OIDC publisher below (since we don't allow burning
         # of macaroons from non-OIDC principals).
-        macaroon: Macaroon = macaroon_service.verify_signature_only(unverified_macaroon)
+        macaroon: Macaroon = macaroon_service.verify_signature_only(token)
     except InvalidMacaroonError:
         request.metrics.increment(
             "warehouse.oidc.burn_oidc_issued_token",
@@ -627,10 +625,9 @@ def _burn_jwt(token: str, request: Request):
         return _accepted(request=request)
 
     registry = request.find_service(IJWTRegistry, context=None)
-    if not registry.is_active(verified.jti):
+    if not registry.revoke(verified.jti):
         return _accepted(request=request)
 
-    registry.revoke(verified.jti)
     publisher = request.db.get(OIDCPublisher, verified.subject.id)
     # Revoke even if the publisher is gone. Record events for projects that
     # still belong to the publisher.
