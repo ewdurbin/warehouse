@@ -126,6 +126,7 @@ nav:
   - Security:
       - Overview: security/index.md
       - Security Policy Flow: security/security-policy-flow.md
+      - Trusted Publisher JWT Trial: development/trusted-publisher-jwt-trial.md
       - Token Scanning: development/token-scanning.md
       - Attestation Internals: security/attestation-internals.md
   - API Reference:
