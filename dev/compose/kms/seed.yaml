@@ -1,0 +1,73 @@
+# These RSA private keys are public fixtures for local development only.
+Keys:
+  Asymmetric:
+    Rsa:
+      - Metadata:
+          KeyId: 00000000-0000-4000-8000-000000000001
+          KeyUsage: SIGN_VERIFY
+        PrivateKeyPem: |
+          -----BEGIN PRIVATE KEY-----
+          MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDEoj2WJrlD4gEz
+          nNyDZPUuDjPf4g+xqVu1jTxXeOd9rIYHvqw4MwYT07/calhrXJyTl+l1giKSRaLH
+          SQEBZHhTHrKcXMWkaMuy1MViLpd9C7xzibn6lFeDWGDYTTpSkke/lpndncswl4t6
+          ZULDWBJw8uBHMsYx4N0Tmzgm1SVMSKb7QEzb1nOAyCGeOjeo3c3nQH452H6Wa/23
+          90+VjzimVBXA27d69LM3ZaTHo1MQEIXxOXLOoQoc9Vd4d3KA8RAl921LNscq2gzB
+          HIv54g+Cursq3Re0lmDr61fyU61Pyw/8HGkQnbIUrGOu8ZOeYXY8vv0ImfqWXDHZ
+          6xgAr1drAgMBAAECggEADsL/TJ5rmiUFYhKMm3Cg12xJiK038GZ+dAq+VPLGrjCd
+          f0dZNn7eHe7voGR7btPtDUeCR0gVwFVp+vwID0qzncnYLtToIYecgzhl+RD2XnTb
+          GPFl/OHWEA46dwKVNk21BTURKAoIjwVRe0bO1EtwVvpky/OL3YK8FhS5CnFF84v+
+          xQE2KGxubcfeGYgZ1putZ/qAv63uNv8K+SQIl6Gtij6q/U86I5yy32tnJ534vEIW
+          FkuumZOgjvTXa68KLwvCKO/ZORSj8TagKn7KoFyr9JriHyqKXogN0crAsVnJmMrZ
+          riYO740eBkczeMDs2OS9q5hZ8md1BuZmqDhhoj5tAQKBgQD/WSfVazV8BBjVWtSk
+          ZqudMP2+kDaNOyPznDZVc6unKUQmSvV49thnaAMqx1b9FRB/OQv5978pmi7n2t2B
+          wuK2f8iav6iX1ND4AMeVJsC3Ulq9raa0VmBkfp+Wwye6NSHTqtkqbtjHjJWczxb9
+          VIDRtFfYmQNaQc8fFtkiLOOamwKBgQDFIriP6grBrKSwglh+7dMS955Jv1jKY1VB
+          4LJRWzb3rzX1f1uog8E2yGXhfiiE5t9vmN22LBmLdZcRGOT6an6tfUjvN/+QBSW7
+          MnEA2+iCKjEE4AovR5tTvtpnDv2XZIYkH1M22OvBJSnVciYOE65ZlqifgWodtccP
+          gO9Qb3lbcQKBgQDiP0jAHKHjJG4sfLJ0iFP+j24E7xqmwIP2Ua8Cv96T2kh79WbS
+          q0TLOqmzubQlwgg/8XffH9jNL8Pnw1EIrHjcYxSHqNHk1bfiRi6QxSl0RRAJiFdw
+          6ie2Y0tb9ca5gmJafcK1ikmhZbsamZMxGzKYnEZJsCn8StsOHNx/H277iQKBgQCZ
+          qr0PgbKs0fT2mkR9fMmCCX9boUqHSPMWjR6zCFVKsUtweLxsGXgtSf0QzxSqtIUL
+          Kq/451tqOFlvvGYRRZ5FglmuD4qpKzoEOAeaUdFmVZksYa/OtxS/LRB2MVs//d4K
+          nlhxcpojTuLTPU2ov3Ky5xu+alTbn+zxiuIBY0PIIQKBgQCxvv4LZ1g6v2xK4bst
+          RgdJ/kdNRTsgUo3hiICD2uoF4Bv53dIuGLPZZxA9kLv7L78PTUZ8XF/g3OT19cDW
+          iZ6bHs3BSMnGo1/0D/wmKUcqqTjCXWPmVlWLAuBigMWvxtOv77XdUj6TBFEqO1Qb
+          IMUqU2qmWV/GS81L3442i7ZA1g==
+          -----END PRIVATE KEY-----
+      - Metadata:
+          KeyId: 00000000-0000-4000-8000-000000000002
+          KeyUsage: SIGN_VERIFY
+        PrivateKeyPem: |
+          -----BEGIN PRIVATE KEY-----
+          MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDu9OV7bhMM0RZh
+          7S6dwAJ6iyJytnQFHGP+JJRO9NgJ8eWwW2nG0LIkEnQHy7XeGJ4J+KT5DA/NsHT0
+          g1gREv4RB7HwD+iO5EoYjRp15aPUp5JUvIoUJjqyK8vG89cposCZJRl88vSvk2+j
+          pEL9A25+JKntRNM2rXcl1Ux82w8p0rsVNOTFyC8jhfio+5b0VEda20nO79iQ4wsn
+          17NF0XUx/IcEImbimruKUm9dg+mx1bSuM7lRRYUsAulCjDG743pIr/92ZoF64Snh
+          s+agmg6fbNBbMYIMGeVR7l82Cq2ooYbwioqecWU6xWU/YdRgX4k2vKP71+muL+zF
+          ua56UuUdAgMBAAECggEAIueI4de5VqTwFQvVRFu4wPez53e5SMnV3ViwhTwElqdL
+          +s/PiqgPbW94nW7nOPL1mtVEG9DkOhJtcw4AfjX9ALXUCxH30W+NVzq9Q71wie6U
+          VGZZ8QmIh2AYWw5hPoa0hWpC59qBXWg25XtoAZdPu4NVgwALri/2eINIsfA5rcz/
+          GYifzqY3BWkD0779Lx4mZO/uzpX/fNm7AHSLvWWVBVpsal/OHNkNlnV3LMYtsMql
+          81rPYgfXFobguywPGNVBZ6u4DB/nyk0Ji36kHHFUocQ4IXTPslWWBmPUJUMHf8On
+          oNNpTQbmto4iRMVT+mY7XnFmJZw1Hw4R8UHiN8W14QKBgQD9hUjlKSJf7HX/OM2f
+          DoCU8CdamFe2rzek+i71pPRO2ZR6BjbkCiC3fHgNWI3/anoQdoP70OBSKMRFOLdg
+          X2+l7+GaxZst5wLutQyoqm5Hc3/etYQG6k4i1E8GGVZf8HnDLzz9TTuSe8uf3kZu
+          iaOoX4w8sEJnUTMdFkp6Js3u2QKBgQDxSyYuAHKiYQT6I89G+Hvc6EYjnQwwrIA3
+          Bwd7Y+kXnL8ulcf8IRpm57e8Npxe9FC82MJcDvNGk/Im8EWN68eNS7MLPkKSHxBu
+          BfPr6lAC4jPCWXcA8clllw7SFwfFeZoaObh2cPKMME/UwioBbirj2ChyBLw9GEF8
+          BycD7sIF5QKBgFM0XFFBp9N9othpxyptswuuqevU1ezSItwVdDYQtlHunQlTYs6C
+          +GvgAPK4Xpo2Uut2SijqS8ULNidVzvFlQRpf2VZXhm+RQugfKZFtphXzNUNdpYAz
+          hANwVKM2y59fKEdECKtFnsibsp+8brc2myzWdwsv+gs4niLsvvLKK4o5AoGBAMvj
+          5mUkt7kCJkSAEdw0h+WI2Aur3usaOFVHOUlIiWQMbXgd1Jj2F+swjg8aTlPmOnr4
+          5nMHpwXSaeIBUaS0wTBh8O7lMzdpzGZL3WtR2T42ieoF0wsXREj1te5My6JQOKlE
+          cNyUYD+ZazuqvffrcY6JztNZsP4nCt6U5KDsFUMJAoGBAO1BH7inzV3LYL2fAMmS
+          lyINogsRSd/n3qaz9VtQFChM95nl4UWH9cXi9fzfKeUZzUFXnD2BocL4zMCz3tUf
+          g7CW/ztaO/IP+qvyZ4BLo2KLzA3Cyj9C/JCd2AcDIeBLUoE+dINUMeMuyjob6aso
+          7W3pVRZcXmaLVNwMbVN9SOl6
+          -----END PRIVATE KEY-----
+Aliases:
+  - AliasName: alias/local-1
+    TargetKeyId: 00000000-0000-4000-8000-000000000001
+  - AliasName: alias/local-2
+    TargetKeyId: 00000000-0000-4000-8000-000000000002
