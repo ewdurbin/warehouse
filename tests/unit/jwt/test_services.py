@@ -11,9 +11,7 @@ from zope.interface.verify import verifyClass
 from warehouse.authnz import Permissions
 from warehouse.jwt.interfaces import IJWTVerifier
 from warehouse.jwt.security_policy import JWTSecurityPolicy
-from warehouse.jwt.services import (
-    DisabledJWTVerifier,
-)
+from warehouse.jwt.services import DisabledJWTVerifier
 from warehouse.predicates import AuthMethodsPredicate
 from warehouse.utils.security_policy import MultiSecurityPolicy
 

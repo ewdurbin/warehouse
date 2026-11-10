@@ -1,15 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID, uuid7
 
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from pyramid.exceptions import ConfigurationError
 from sqlalchemy import delete, select
 from zope.interface import implementer
 
 from warehouse.jwt.claims import VerifiedJWT
 from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.jwt.models import IssuedJWT
+from warehouse.jwt.verifier import WarehouseJWTVerifier
+from warehouse.predicates import auth_methods_for_route, jwt_audience_for_route
+from warehouse.utils.security_policy import AuthenticationMethod
 
 
 @implementer(IJWTVerifier)
@@ -22,6 +29,57 @@ class DisabledJWTVerifier:
 
     def verify(self, token: str) -> VerifiedJWT | None:
         return None
+
+
+class WarehouseJWTVerifierFactory:
+    """Load verification keys at startup and select an audience by route."""
+
+    def __init__(self, settings):
+        issuer = settings.get("warehouse.jwt.issuer")
+        audiences = {
+            name: settings.get(f"warehouse.jwt.{name}_audience")
+            for name in ("upload", "api")
+        }
+        if audiences["upload"] == audiences["api"]:
+            raise ConfigurationError("JWT upload and API audiences must be distinct")
+
+        configured_keys = settings.get("warehouse.jwt.verification_keys")
+        if not isinstance(configured_keys, Mapping) or not configured_keys:
+            raise ConfigurationError(
+                "warehouse.jwt.verification_keys must map key IDs to PEM public keys"
+            )
+        keys = {}
+        for kid, pem in configured_keys.items():
+            if not isinstance(pem, str):
+                raise ConfigurationError("JWT verification keys must be PEM strings")
+            try:
+                keys[kid] = load_pem_public_key(pem.encode("utf-8"))
+            except (ValueError, UnsupportedAlgorithm) as exc:
+                raise ConfigurationError("Invalid JWT PEM public key") from exc
+
+        try:
+            self._verifiers = {
+                name: WarehouseJWTVerifier(issuer=issuer, audience=audience, keys=keys)
+                for name, audience in audiences.items()
+            }
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
+
+    def __call__(self, context, request):
+        route = request.matched_route
+        if route is not None:
+            methods = auth_methods_for_route(route)
+            audience = jwt_audience_for_route(route)
+            if audience is not None and AuthenticationMethod.JWT in (methods or ()):
+                return self._verifiers[audience]
+        return DisabledJWTVerifier()
+
+
+def jwt_verifier_factory(settings):
+    """Enable JWT verification when public keys are configured."""
+    if "warehouse.jwt.verification_keys" not in settings:
+        return DisabledJWTVerifier.create_service
+    return WarehouseJWTVerifierFactory(settings)
 
 
 def _active_jwt_conditions(token_id: UUID):
