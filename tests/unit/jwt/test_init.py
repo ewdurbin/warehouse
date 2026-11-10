@@ -3,8 +3,12 @@
 from celery.schedules import crontab
 from pyramid.request import Request, apply_request_extensions
 
-from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
-from warehouse.jwt.services import DatabaseJWTRegistry, DisabledJWTVerifier
+from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTVerifier
+from warehouse.jwt.services import (
+    DatabaseJWTRegistry,
+    DisabledJWTIssuer,
+    DisabledJWTVerifier,
+)
 from warehouse.jwt.tasks import delete_expired_jwts
 
 
@@ -20,6 +24,7 @@ def test_default_services_and_cleanup_schedule(app_config, db_session):
     assert isinstance(
         request.find_service(IJWTVerifier, context=None), DisabledJWTVerifier
     )
+    assert isinstance(request.find_service(IJWTIssuer, context=None), DisabledJWTIssuer)
 
     task_name = app_config.task(delete_expired_jwts).name
     schedule = app_config.registry["celery.app"].conf.beat_schedule

@@ -948,7 +948,7 @@ def configure(settings=None):
     # Register support for Macaroon based authentication
     config.include(".macaroons")
 
-    # Register authentication and the lifecycle registry for Warehouse-issued JWTs.
+    # Register JWT verification, signing, and token storage.
     config.include(".jwt")
 
     # Register support for OIDC based authentication

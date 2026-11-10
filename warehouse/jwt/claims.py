@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -61,3 +61,12 @@ class VerifiedJWT:
     issued_at: datetime
     expires_at: datetime
     authorization_details: tuple[AuthorizationDetail, ...]
+
+
+@dataclass(frozen=True)
+class SignedJWT:
+    """A signed token with its registry ID and expiration time."""
+
+    token: str = field(repr=False)
+    jti: UUID
+    expires_at: datetime
