@@ -29,14 +29,44 @@ def test_principals_for_with_none():
 
 
 class TestPermissionAllowedByAuthenticationMethod:
+    def test_api_key_placeholder_grants_no_permissions(self):
+        assert AuthenticationMethod("api-key") is AuthenticationMethod.API_KEY
+        assert not any(
+            permission_allowed_by_authentication_method(
+                permission, AuthenticationMethod.API_KEY
+            )
+            for permission in Permissions
+        )
+
+    def test_jwt_allowed_permissions(self):
+        assert {
+            permission
+            for permission in Permissions
+            if permission_allowed_by_authentication_method(
+                permission, AuthenticationMethod.JWT
+            )
+        } == {
+            Permissions.ProjectsUpload,
+            Permissions.APIEcho,
+            Permissions.APIObservationsAdd,
+        }
+
+    @pytest.mark.parametrize(
+        "method", [AuthenticationMethod.API_KEY, AuthenticationMethod.JWT]
+    )
+    def test_api_methods_reject_raw_permission_strings(self, method):
+        assert not permission_allowed_by_authentication_method(
+            "projects:upload", method
+        )
+
     @pytest.mark.parametrize(
         "permission",
         [
             Permissions.ProjectsUpload,
             # TODO: Once the Maintainer API takes over these endpoints, move
             #       APIEcho and APIObservationsAdd to
-            #       test_macaroon_disallowed_permissions (they'll be dropped
-            #       from PERMISSION_AUTH_METHODS).
+            #       test_macaroon_disallowed_permissions (only JWT will
+            #       remain allowed for those permissions).
             Permissions.APIEcho,
             Permissions.APIObservationsAdd,
         ],
