@@ -55,10 +55,6 @@ class DisabledJWTIssuer:
 class DisabledJWTVerifier:
     """Reject every JWT."""
 
-    @classmethod
-    def create_service(cls, context, request):
-        return cls()
-
     def verify(self, token: str) -> VerifiedJWT | None:
         return None
 
@@ -97,6 +93,10 @@ class WarehouseJWTVerifierFactory:
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc
 
+    def for_audience(self, name: str) -> WarehouseJWTVerifier:
+        """Return the verifier for a server-selected audience."""
+        return self._verifiers[name]
+
     def __call__(self, context, request):
         route = request.matched_route
         if route is not None:
@@ -105,13 +105,6 @@ class WarehouseJWTVerifierFactory:
             if audience is not None and AuthenticationMethod.JWT in (methods or ()):
                 return self._verifiers[audience]
         return DisabledJWTVerifier()
-
-
-def jwt_verifier_factory(settings):
-    """Enable JWT verification when public keys are configured."""
-    if "warehouse.jwt.verification_keys" not in settings:
-        return DisabledJWTVerifier.create_service
-    return WarehouseJWTVerifierFactory(settings)
 
 
 def _active_jwt_conditions(token_id: UUID):
@@ -158,9 +151,11 @@ class DatabaseJWTRegistry:
             is not None
         )
 
-    def revoke(self, token_id: UUID) -> None:
-        self.db.execute(
+    def revoke(self, token_id: UUID) -> bool:
+        revoked_id = self.db.scalar(
             delete(IssuedJWT)
-            .where(IssuedJWT.id == token_id)
+            .where(*_active_jwt_conditions(token_id))
+            .returning(IssuedJWT.id)
             .execution_options(synchronize_session=False)
         )
+        return revoked_id is not None

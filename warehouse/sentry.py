@@ -6,6 +6,7 @@ from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.pyramid import PyramidIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+from sentry_sdk.utils import iter_event_frames
 from webob.request import DisconnectionError
 
 
@@ -58,7 +59,12 @@ def before_send(event, hint):
             or type(exc_value).__name__ in ignore_exceptions
         ):
             return None
-        return event
+
+    if event.get("transaction") == "oidc.burn_token":
+        # The submitted credential can appear in the body and in frame locals.
+        event.get("request", {}).pop("data", None)
+        for frame in iter_event_frames(event):
+            frame.pop("vars", None)
     return event
 
 

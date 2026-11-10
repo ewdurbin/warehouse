@@ -8,7 +8,7 @@ from pyramid.exceptions import ConfigurationError
 from pyramid.interfaces import IRoutesMapper
 
 from tests.common.jwt import UPLOAD_AUDIENCE
-from warehouse.jwt.services import jwt_verifier_factory
+from warehouse.jwt.services import WarehouseJWTVerifierFactory
 
 
 @pytest.mark.parametrize(
@@ -22,7 +22,7 @@ from warehouse.jwt.services import jwt_verifier_factory
 def test_missing_setting(jwt_settings, setting, message):
     del jwt_settings[f"warehouse.jwt.{setting}"]
     with pytest.raises(ConfigurationError, match=message):
-        jwt_verifier_factory(jwt_settings)
+        WarehouseJWTVerifierFactory(jwt_settings)
 
 
 @pytest.mark.parametrize(
@@ -36,7 +36,7 @@ def test_missing_setting(jwt_settings, setting, message):
 def test_invalid_setting(jwt_settings, setting, value, message):
     jwt_settings[f"warehouse.jwt.{setting}"] = value
     with pytest.raises(ConfigurationError, match=message):
-        jwt_verifier_factory(jwt_settings)
+        WarehouseJWTVerifierFactory(jwt_settings)
 
 
 def test_private_key_is_rejected(jwt_settings, signing_keys):
@@ -50,7 +50,7 @@ def test_private_key_is_rejected(jwt_settings, signing_keys):
         .decode()
     )
     with pytest.raises(ConfigurationError, match="Invalid JWT PEM public key"):
-        jwt_verifier_factory(jwt_settings)
+        WarehouseJWTVerifierFactory(jwt_settings)
 
 
 @pytest.mark.parametrize(
@@ -72,7 +72,7 @@ def test_private_key_is_rejected(jwt_settings, signing_keys):
 def test_route_must_declare_audience_and_jwt_method(
     jwt_settings, clock, sign, route_options, accepted
 ):
-    factory = jwt_verifier_factory(jwt_settings)
+    factory = WarehouseJWTVerifierFactory(jwt_settings)
     request = testing.DummyRequest(matched_route=None)
 
     if route_options is not None:

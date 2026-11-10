@@ -21,6 +21,8 @@ from warehouse.email import (
     send_pending_trusted_publisher_reified_email,
 )
 from warehouse.events.tags import EventTag
+from warehouse.jwt.claims import SubjectKind
+from warehouse.jwt.interfaces import IJWTRegistry, IJWTVerifier
 from warehouse.macaroons import InvalidMacaroonError, caveats
 from warehouse.macaroons.interfaces import IMacaroonService
 from warehouse.macaroons.models import Macaroon
@@ -542,19 +544,21 @@ def burn_oidc_issued_token(request: Request):
     Downstream integrators can call this endpoint to expedite the invalidation of a
     Trusted Publishing-issued token.
 
-    Unlike our other Trusted Publishing APIs, this API only ever returns an
-    HTTP Accepted (indicating receipt, but not communicating the outcome).
+    HTTP Accepted acknowledges receipt of the burn request.
     """
 
     try:
-        payload = BurnPayload.model_validate_json(request.body)
-        unverified_macaroon = payload.token
+        token = BurnPayload.model_validate_json(request.body).token
     except ValidationError:
         request.metrics.increment(
             "warehouse.oidc.burn_oidc_issued_token",
             tags=["status:failure", "failure_reason:invalid_payload"],
         )
         return _accepted(request=request)
+
+    # Use the compact JWT format to choose the verifier.
+    if token.count(".") == 2:
+        return _burn_jwt(token, request)
 
     macaroon_service: DatabaseMacaroonService = request.find_service(
         IMacaroonService, context=None
@@ -567,7 +571,7 @@ def burn_oidc_issued_token(request: Request):
         # from spoofing a macaroon if they know just the UUID) and we check that the
         # macaroon corresponds to an OIDC publisher below (since we don't allow burning
         # of macaroons from non-OIDC principals).
-        macaroon: Macaroon = macaroon_service.verify_signature_only(unverified_macaroon)
+        macaroon: Macaroon = macaroon_service.verify_signature_only(token)
     except InvalidMacaroonError:
         request.metrics.increment(
             "warehouse.oidc.burn_oidc_issued_token",
@@ -605,4 +609,37 @@ def burn_oidc_issued_token(request: Request):
         ],
     )
 
+    return _accepted(request=request)
+
+
+def _burn_jwt(token: str, request: Request):
+    # Use the upload verifier for the token in the body, independently of the
+    # route's authentication settings.
+    verifier = request.find_service(IJWTVerifier, name="upload", context=None)
+    verified = verifier.verify(token)
+    if verified is None or verified.subject.kind != SubjectKind.PUBLISHER:
+        request.metrics.increment(
+            "warehouse.oidc.burn_oidc_issued_token",
+            tags=["status:failure", "failure_reason:invalid_jwt"],
+        )
+        return _accepted(request=request)
+
+    registry = request.find_service(IJWTRegistry, context=None)
+    if not registry.revoke(verified.jti):
+        return _accepted(request=request)
+
+    publisher = request.db.get(OIDCPublisher, verified.subject.id)
+    # Revoke even if the publisher is gone. Record events for projects that
+    # still belong to the publisher.
+    if publisher is not None:
+        for project in publisher.projects:
+            project.record_event(
+                tag=EventTag.Project.ShortLivedAPITokenRevoked,
+                request=request,
+                additional={},
+            )
+    request.metrics.increment(
+        "warehouse.oidc.burn_oidc_issued_token",
+        tags=["status:success", "token_format:jwt"],
+    )
     return _accepted(request=request)

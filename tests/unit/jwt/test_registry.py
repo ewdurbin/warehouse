@@ -80,6 +80,7 @@ class TestDatabaseJWTRegistry:
         clock.move_to(expires_at)
         assert not jwt_registry.is_active(token_id)
         assert jwt_registry.get_active(token_id) is None
+        assert not jwt_registry.revoke(token_id)
         assert db_session.get(IssuedJWT, token_id) is not None
 
     def test_revoke(self, jwt_registry, db_session, clock):
@@ -87,8 +88,8 @@ class TestDatabaseJWTRegistry:
         token_id = jwt_registry.register(expires_at)
         other_id = jwt_registry.register(expires_at)
 
-        jwt_registry.revoke(token_id)
-        jwt_registry.revoke(token_id)
+        assert jwt_registry.revoke(token_id)
+        assert not jwt_registry.revoke(token_id)
 
         assert not jwt_registry.is_active(token_id)
         assert jwt_registry.get_active(token_id) is None

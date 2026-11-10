@@ -6,8 +6,9 @@ from warehouse.jwt.interfaces import IJWTIssuer, IJWTRegistry, IJWTSigner, IJWTV
 from warehouse.jwt.services import (
     DatabaseJWTRegistry,
     DisabledJWTIssuer,
+    DisabledJWTVerifier,
+    WarehouseJWTVerifierFactory,
     jwt_issuer_factory,
-    jwt_verifier_factory,
 )
 from warehouse.jwt.signing import KMSJWTSignerService
 from warehouse.jwt.tasks import delete_expired_jwts
@@ -15,7 +16,14 @@ from warehouse.jwt.tasks import delete_expired_jwts
 
 def includeme(config):
     settings = config.registry.settings
-    config.register_service_factory(jwt_verifier_factory(settings), IJWTVerifier)
+    if "warehouse.jwt.verification_keys" in settings:
+        verifier_factory = WarehouseJWTVerifierFactory(settings)
+        config.register_service_factory(verifier_factory, IJWTVerifier)
+        upload_verifier = verifier_factory.for_audience("upload")
+    else:
+        upload_verifier = DisabledJWTVerifier()
+        config.register_service(upload_verifier, IJWTVerifier)
+    config.register_service(upload_verifier, IJWTVerifier, name="upload")
     config.register_service_factory(DatabaseJWTRegistry.create_service, IJWTRegistry)
 
     if (
